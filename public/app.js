@@ -215,6 +215,7 @@
             <a class="tab ${active === 'overview' ? 'on' : ''}" href="#/c/${c.id}">${ic('grid')}Overview${changes ? `<span class="n" id="tabBadge">${changes}</span>` : '<span id="tabBadge"></span>'}</a>
             <a class="tab ${active === 'report' ? 'on' : ''}" href="${S.lastReport ? `#/c/${c.id}/report/${S.lastReport[0]}/${S.lastReport[1]}` : `#/c/${c.id}/history`}">${ic('report')}Report</a>
             <a class="tab ${active === 'history' ? 'on' : ''}" href="#/c/${c.id}/history">${ic('history')}History</a>
+            <a class="tab ${active === 'queries' ? 'on' : ''}" href="#/c/${c.id}/queries">${ic('code')}Queries<span id="badge-queries"></span></a>
             <span class="tab-sep"></span>
             <a class="tab ${active === 'logs' ? 'on' : ''}" href="#/c/${c.id}/logs">${ic('rows')}Logs<span id="badge-logs"></span></a>
             <a class="tab ${active === 'requests' ? 'on' : ''}" href="#/c/${c.id}/requests">${ic('share')}Requests<span id="badge-requests"></span></a>

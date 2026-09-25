@@ -51,6 +51,7 @@ To find out, you normally read the route, then the controller, then a service, a
 - 🌐 **Requests** — every request that came in, every API call your app made (payment, SMS, mail, AI…), with bodies
 - ⏳ **Queues** — jobs pushed, picked up, finished or failed
 - 🧭 **Code** — the models, controllers, services and listeners that touch those tables
+- 🔎 **Your own queries** — the SQL you keep re-running, now re-run for you, with every change highlighted
 
 One click in your app → one clear answer. No SDK, no code changes, no agents to install in your project.
 
@@ -123,6 +124,14 @@ Lakhs of rows? Unchanged tables are skipped by checksum and every list is paged,
 
 </td>
 </tr>
+<tr>
+<td colspan="2" valign="top">
+
+### 🔎 Watched queries
+Save the 3–4 queries you keep re-running in a SQL client while debugging. WhatChanged re-runs them every few seconds and highlights new rows, removed rows and each changed cell (`balance 500 → 380`), with a history of every change. SQL and MongoDB are supported, and every query runs read-only.
+
+</td>
+</tr>
 </table>
 
 <br>
@@ -145,13 +154,19 @@ Every table in the report shows its new, updated and deleted rows, which tables 
 
 <img src="images/report-orders.png" alt="Report card of the orders table with relations and code hints" width="100%">
 
-### 3 · Watch the logs while you click
+### 3 · Keep your own queries running
+
+Save the queries you keep checking, press **Compare from now**, then act in your app. New rows turn green and changed cells show old → new, the moment they happen.
+
+<img src="images/queries.png" alt="Watched queries showing a new row and changed cells live" width="100%">
+
+### 4 · Watch the logs while you click
 
 Errors and their stack traces stay together. Tail up to five files at once, from any framework.
 
 <img src="images/logs.png" alt="Two log files tailed side by side" width="100%">
 
-### 4 · See every request — in and out
+### 5 · See every request — in and out
 
 <img src="images/requests.png" alt="Incoming requests and outgoing API calls" width="100%">
 
@@ -162,7 +177,7 @@ Errors and their stack traces stay together. Tail up to five files at once, from
 </tr>
 </table>
 
-### 5 · Follow the background jobs
+### 6 · Follow the background jobs
 
 <img src="images/queues.png" alt="Queues from database tables and Redis, with job activity" width="100%">
 
@@ -306,6 +321,7 @@ The inbound and outbound proxies use ports **4480** and **4481** by default. You
 
 - **100% local.** No accounts, no telemetry, and your data never leaves your machine.
 - **Read-only.** WhatChanged runs only `SELECT`, `COUNT`, `CHECKSUM` and metadata queries, and never writes to your database.
+- **Watched queries can't write.** Each one must be a single read statement (`SELECT`, `WITH`, `SHOW`, `EXPLAIN`…). It runs on its own connection inside a read-only transaction that is always rolled back, with a 10-second timeout and a 1,000-row cap.
 - **Credentials are encrypted** (AES-256-GCM) in your data folder, with a key generated on your machine.
 - The dashboard and proxies listen on `127.0.0.1` only. Every API call needs a per-session token, and requests from other hostnames are refused, which blocks DNS rebinding.
 - HTTPS traffic is never decrypted, only timed and measured.
@@ -330,6 +346,12 @@ It never writes. A snapshot reads each table once. Unchanged tables are skipped 
 <summary><b>My tables have millions of rows.</b></summary>
 
 Counts and checksums stay exact. Tables above 50,000 rows compare their newest 2,000 rows row by row, which catches inserts and recent edits. Both limits can be changed.
+</details>
+
+<details>
+<summary><b>How does a watched query know which row is which?</b></summary>
+
+Rows are matched by a key column: `id`, `_id`, `uuid`, `code` or `email` if present, otherwise the first column when its values are unique. You can also pick the column in the query editor. Single-value queries such as `SELECT COUNT(*)` are compared directly. For MongoDB, write the query as JSON, e.g. `{"collection": "orders", "filter": {"status": "paid"}, "sort": {"_id": -1}, "limit": 10}`, or give a `pipeline` to run an aggregation.
 </details>
 
 <details>

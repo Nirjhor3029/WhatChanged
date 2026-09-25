@@ -1,4 +1,5 @@
-import { MongoClient } from 'mongodb';
+import { EJSON, MongoClient } from 'mongodb';
+import { QUERY_ROW_LIMIT, QUERY_TIMEOUT_MS, parseMongoQuery, uniqueCols } from '../monitor/queries.js';
 import { config } from '../config.js';
 import { finishTable, md5, norm, plain, sha1, typeOf } from '../util.js';
 
@@ -35,6 +36,18 @@ export class MongoDriver {
   }
 
   async close() { try { await this.client.close(); } catch { /* ignore */ } }
+
+  /** Run a watched query given as JSON: find (filter/projection/sort/limit) or aggregate (pipeline). */
+  async runQuery(text) {
+    const q = parseMongoQuery(text, EJSON);
+    const coll = this.requireDb().collection(q.collection);
+    const cap = Math.min(Number(q.limit) || QUERY_ROW_LIMIT + 1, QUERY_ROW_LIMIT + 1);
+    const docs = q.pipeline
+      ? await coll.aggregate([...q.pipeline, { $limit: cap }], { maxTimeMS: QUERY_TIMEOUT_MS }).toArray()
+      : await coll.find(q.filter || {}, { projection: q.projection, sort: q.sort, skip: q.skip, limit: cap, maxTimeMS: QUERY_TIMEOUT_MS }).toArray();
+    const cols = MongoDriver.inferColumns(docs).map((c) => c.name);
+    return { cols: uniqueCols(cols), rows: docs.slice(0, QUERY_ROW_LIMIT).map((d) => cols.map((c) => (c in d ? norm(d[c]) : null))), truncated: docs.length > QUERY_ROW_LIMIT };
+  }
   async ping() { await this.client.db('admin').command({ ping: 1 }); }
 
   async version() {

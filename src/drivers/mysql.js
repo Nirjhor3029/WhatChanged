@@ -1,5 +1,6 @@
 import mysql from 'mysql2/promise';
 import { finishTable, columnSig, md5, norm } from '../util.js';
+import { QUERY_ROW_LIMIT, QUERY_TIMEOUT_MS, uniqueCols } from '../monitor/queries.js';
 
 const q = (id) => '`' + String(id).replace(/`/g, '``') + '`';
 
@@ -22,6 +23,7 @@ export class MysqlDriver {
     };
     if (cfg.ssl) opts.ssl = { rejectUnauthorized: false };
     const d = new MysqlDriver();
+    d.opts = opts;
     try {
       d.conn = await mysql.createConnection(opts);
     } catch (e) {
@@ -34,7 +36,33 @@ export class MysqlDriver {
     return d;
   }
 
-  async close() { try { await this.conn.end(); } catch { /* ignore */ } }
+  async close() {
+    try { await this.conn.end(); } catch { /* ignore */ }
+    try { await this.qconn?.end(); } catch { /* ignore */ }
+  }
+
+  /** Run a user's watched query: own connection, READ ONLY transaction, row limit, timeout. */
+  async runQuery(text) {
+    if (!this.qconn) {
+      this.qconn = await mysql.createConnection(this.opts);
+      this.qconn.on('error', () => { this.qconn = null; });
+      for (const s of [`SET SESSION sql_select_limit = ${QUERY_ROW_LIMIT + 1}`, `SET SESSION max_execution_time = ${QUERY_TIMEOUT_MS}`, `SET SESSION max_statement_time = ${QUERY_TIMEOUT_MS / 1000}`]) {
+        try { await this.qconn.query(s); } catch { /* MySQL vs MariaDB variables */ }
+      }
+    }
+    const c = this.qconn;
+    await c.query('START TRANSACTION READ ONLY');
+    try {
+      const [rows, fields] = await c.query({ sql: text, rowsAsArray: true });
+      if (!fields) throw new Error('This statement does not return rows.');
+      return { cols: uniqueCols(fields.map((f) => f.name)), rows: rows.slice(0, QUERY_ROW_LIMIT).map((r) => r.map(norm)), truncated: rows.length > QUERY_ROW_LIMIT };
+    } catch (e) {
+      if (e.fatal) this.qconn = null;
+      throw new Error(e.sqlMessage || e.message);
+    } finally {
+      try { await c.query('ROLLBACK'); } catch { this.qconn = null; }
+    }
+  }
   async ping() { await this.conn.query('SELECT 1'); }
 
   async rows(sql, params = []) {

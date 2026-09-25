@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { config } from '../config.js';
 import { finishTable, columnSig, md5, norm } from '../util.js';
+import { QUERY_ROW_LIMIT, QUERY_TIMEOUT_MS, uniqueCols } from '../monitor/queries.js';
 
 // Keep date/time values exactly as Postgres prints them (no timezone surprises).
 for (const oid of [1082, 1083, 1114, 1184, 1266]) pg.types.setTypeParser(oid, (v) => v);
@@ -25,6 +26,7 @@ export class PostgresDriver {
     opts.connectionTimeoutMillis = 10000;
     opts.application_name = 'whatchanged';
     const d = new PostgresDriver();
+    d.opts = opts;
     d.client = new pg.Client(opts);
     try {
       await d.client.connect();
@@ -36,7 +38,37 @@ export class PostgresDriver {
     return d;
   }
 
-  async close() { try { await this.client.end(); } catch { /* ignore */ } }
+  async close() {
+    try { await this.client.end(); } catch { /* ignore */ }
+    try { await this.qclient?.end(); } catch { /* ignore */ }
+  }
+
+  /** Run a user's watched query: own connection, READ ONLY transaction, cursor-limited rows, timeout. */
+  async runQuery(text) {
+    if (!this.qclient) {
+      const c = new pg.Client({ ...this.opts, application_name: 'whatchanged-queries' });
+      c.on('error', () => { this.qclient = null; });
+      await c.connect();
+      this.qclient = c;
+    }
+    const c = this.qclient;
+    await c.query('BEGIN READ ONLY');
+    try {
+      await c.query(`SET LOCAL statement_timeout = ${QUERY_TIMEOUT_MS}`);
+      let res;
+      if (/^\s*(select|with|values|table)\b/i.test(text)) {
+        // A cursor limits the rows without rewriting the user's SQL.
+        await c.query(`DECLARE whatchanged_q NO SCROLL CURSOR FOR ${text}`);
+        res = await c.query({ text: `FETCH ${QUERY_ROW_LIMIT + 1} FROM whatchanged_q`, rowMode: 'array' });
+      } else {
+        res = await c.query({ text, rowMode: 'array' });
+      }
+      if (!res.fields?.length) throw new Error('This statement does not return rows.');
+      return { cols: uniqueCols(res.fields.map((f) => f.name)), rows: res.rows.slice(0, QUERY_ROW_LIMIT).map((r) => r.map(norm)), truncated: res.rows.length > QUERY_ROW_LIMIT };
+    } finally {
+      try { await c.query('ROLLBACK'); } catch { this.qclient = null; }
+    }
+  }
   async ping() { await this.client.query('SELECT 1'); }
 
   async rows(sql, params = []) { return (await this.client.query(sql, params)).rows; }

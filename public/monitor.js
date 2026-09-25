@@ -39,6 +39,7 @@
   function stopStream() { M.es?.close(); M.es = null; M.connected = false; }
 
   function handle(ev) {
+    D.hooks.monitorEvent?.(ev); // watched queries (queries.js) listen here too
     switch (ev.type) {
       case 'hello':
         M.logs = new Map();

@@ -19,6 +19,7 @@ import { discoverLogs } from './src/monitor/logs.js';
 import { bootHubs, dropHub, hubFor, logId } from './src/monitor/hub.js';
 import { queueTables } from './src/monitor/queues.js';
 import { codeMap } from './src/monitor/codemap.js';
+import { checkReadOnly } from './src/monitor/queries.js';
 
 const store = new Storage();
 const snapper = new Snapshotter(store);
@@ -190,6 +191,76 @@ const actions = {
     hub.resetQueues();
     await hub.pollQueues();
     return { queues: hub.queues, errors: hub.queueErrors };
+  },
+
+  /* ---------------------------------------------------- watched queries */
+
+  'queries.test': async (b, conn) => {
+    const c = conn();
+    const driver = await getDriver(c);
+    const text = driver.kind === 'mongodb' ? String(b.text || '') : checkReadOnly(b.text);
+    const t0 = Date.now();
+    const res = await driver.runQuery(text);
+    return { ...res, rows: res.rows.slice(0, 50), total: res.rows.length, ms: Date.now() - t0 };
+  },
+
+  'queries.save': async (b, conn) => {
+    const c = conn();
+    const input = b.query || {};
+    const driver = await getDriver(c);
+    const text = driver.kind === 'mongodb' ? String(input.text || '').trim() : checkReadOnly(input.text);
+    await driver.runQuery(text); // fail now, with the database's own message, rather than later
+    const ws = store.workspace(c.id);
+    const q = {
+      id: input.id && ws.queries.some((x) => x.id === input.id) ? input.id : 'q' + crypto.randomBytes(4).toString('hex'),
+      name: cut(String(input.name || '').trim(), 80) || cut(text.replace(/\s+/g, ' '), 60),
+      text,
+      interval: [0, 2, 3, 5, 10, 30, 60].includes(Number(input.interval)) ? Number(input.interval) : 3,
+      key: String(input.key || '').trim(),
+      paused: false,
+    };
+    const i = ws.queries.findIndex((x) => x.id === q.id);
+    if (i >= 0) ws.queries[i] = q; else ws.queries.push(q);
+    if (ws.queries.length > 30) throw new Error('Up to 30 watched queries per project.');
+    store.saveWorkspace(c.id, ws);
+    const hub = hubFor(store, c.id);
+    hub.syncQueries();
+    return hub.runQuery(q);
+  },
+
+  'queries.delete': async (b, conn) => {
+    const c = conn();
+    const ws = store.workspace(c.id);
+    ws.queries = ws.queries.filter((q) => q.id !== b.id);
+    store.saveWorkspace(c.id, ws);
+    hubFor(store, c.id).syncQueries();
+    return null;
+  },
+
+  'queries.pause': async (b, conn) => {
+    const c = conn();
+    const ws = store.workspace(c.id);
+    const q = ws.queries.find((x) => x.id === b.id);
+    if (!q) throw new Error('Query not found');
+    q.paused = !!b.paused;
+    store.saveWorkspace(c.id, ws);
+    const hub = hubFor(store, c.id);
+    hub.send({ type: 'query', q: hub.queryPayload(q) });
+    return hub.queryPayload(q);
+  },
+
+  'queries.run': async (b, conn) => {
+    const c = conn();
+    const q = store.workspace(c.id).queries.find((x) => x.id === b.id);
+    if (!q) throw new Error('Query not found');
+    return hubFor(store, c.id).runQuery(q);
+  },
+
+  'queries.baseline': async (b, conn) => {
+    const c = conn();
+    const q = store.workspace(c.id).queries.find((x) => x.id === b.id);
+    if (!q) throw new Error('Query not found');
+    return hubFor(store, c.id).setQueryBaseline(q);
   },
 
   'code.map': async (b, conn) => {

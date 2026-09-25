@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from '../config.js';
 import { finishTable, columnSig, md5, norm, sha1 } from '../util.js';
+import { QUERY_ROW_LIMIT, uniqueCols } from '../monitor/queries.js';
 
 const qi = (id) => '"' + String(id).replace(/"/g, '""') + '"';
 
@@ -28,6 +29,23 @@ export class SqliteDriver {
   }
 
   async close() { try { this.db.close(); } catch { /* ignore */ } }
+
+  /** Run a user's watched query. The database handle is opened read-only, so writes fail anyway. */
+  async runQuery(text) {
+    const st = this.db.prepare(text);
+    st.setReadBigInts?.(true);
+    const arrays = typeof st.setReturnArrays === 'function';
+    if (arrays) st.setReturnArrays(true);
+    let cols = typeof st.columns === 'function' ? st.columns().map((c) => c.name) : null;
+    if (cols && !cols.length) throw new Error('This statement does not return rows.');
+    const rows = [];
+    for (const r of st.iterate()) {
+      if (!cols) cols = Object.keys(r);
+      rows.push(arrays ? r : cols.map((c) => r[c]));
+      if (rows.length > QUERY_ROW_LIMIT) break;
+    }
+    return { cols: uniqueCols(cols || []), rows: rows.slice(0, QUERY_ROW_LIMIT).map((r) => r.map(norm)), truncated: rows.length > QUERY_ROW_LIMIT };
+  }
   async ping() { this.db.prepare('SELECT 1').get(); }
 
   all(sqlText, ...params) {

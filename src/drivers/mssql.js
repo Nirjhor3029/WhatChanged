@@ -1,5 +1,6 @@
 import sql from 'mssql';
 import { finishTable, columnSig, md5, norm } from '../util.js';
+import { QUERY_ROW_LIMIT, QUERY_TIMEOUT_MS, uniqueCols } from '../monitor/queries.js';
 
 const qi = (id) => '[' + String(id).replace(/]/g, ']]') + ']';
 const RULE = (r) => String(r || '').replace(/_/g, ' ');
@@ -37,6 +38,27 @@ export class MssqlDriver {
   }
 
   async close() { try { await this.pool.close(); } catch { /* ignore */ } }
+
+  /** Run a user's watched query inside a transaction that is always rolled back, with a row cap. */
+  async runQuery(text) {
+    const req = this.pool.request();
+    req.arrayRowMode = true;
+    const batch = `SET XACT_ABORT ON; SET LOCK_TIMEOUT ${QUERY_TIMEOUT_MS}; SET ROWCOUNT ${QUERY_ROW_LIMIT + 1};
+BEGIN TRAN;
+${text};
+IF @@TRANCOUNT > 0 ROLLBACK;
+SET ROWCOUNT 0;`;
+    let res;
+    try {
+      res = await req.query(batch);
+    } finally {
+      try { await this.pool.request().batch('IF @@TRANCOUNT > 0 ROLLBACK; SET ROWCOUNT 0;'); } catch { /* connection already clean */ }
+    }
+    const rows = res.recordsets?.[0];
+    const cols = res.columns?.[0]?.map((c) => c.name) || rows?.columns?.map?.((c) => c.name);
+    if (!rows || !cols) throw new Error('This statement does not return rows.');
+    return { cols: uniqueCols(cols), rows: rows.slice(0, QUERY_ROW_LIMIT).map((r) => r.map(norm)), truncated: rows.length > QUERY_ROW_LIMIT };
+  }
   async ping() { await this.rows('SELECT 1 x'); }
 
   async rows(text, params = {}) {

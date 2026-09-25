@@ -221,3 +221,29 @@
   .job-row { grid-template-columns: 64px 70px minmax(0, 1fr); }
   .job-row > :nth-child(n+4) { display: none; }
 }
+
+/* ============================================================ watched queries */
+.qw-list { display: flex; flex-direction: column; gap: 14px; }
+.qw-card { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; border-radius: var(--r); }
+.qw-card.pulse { animation: qpulse 1.6s var(--ease); border-color: var(--upd-line); }
+.qw-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.qw-title { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.qw-title b { font-size: 15px; }
+.qw-sql { margin: 0; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--bg) 60%, var(--surface-solid)); border: 1px solid var(--line); font-family: var(--mono); font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.qw-sql.open { white-space: pre-wrap; word-break: break-word; }
+.qw-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
+.qw-meta { font-size: 12px; }
+.qw-table { max-height: 460px; }
+.qw-key { font-size: 9.5px; padding: 1px 5px; border-radius: 4px; background: rgba(139, 92, 246, .18); color: #a78bfa; text-transform: none; letter-spacing: 0; }
+.flash-cell { animation: cellflash 2.4s var(--ease); }
+@keyframes cellflash { 0%, 40% { background: rgba(251, 191, 36, .35); } 100% { background: transparent; } }
+.qw-timeline summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--text-2); display: flex; align-items: center; gap: 8px; list-style: none; }
+.qw-timeline summary::-webkit-details-marker { display: none; }
+.qw-tl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: 12.5px; }
+.qw-tl .cl-chg { font-family: var(--mono); font-size: 11.5px; }
+.qw-tpl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; font-size: 12.5px; }
+.qw-tpl .sm-select { height: 30px; max-width: 220px; }
+.qw-tpl #qwTplBtns { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.qw-editor { min-height: 150px; font-size: 13px; line-height: 1.5; }
+.qw-preview:empty { display: none; }
+.qw-starters { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }

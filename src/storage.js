@@ -108,6 +108,7 @@ export class Storage {
     const secrets = this.decrypt(w.secret_enc);
     return {
       logs: w.logs || [],
+      queries: w.queries || [],
       inbound: { enabled: false, target: '', port: 0, ...(w.inbound || {}) },
       outbound: { enabled: false, port: 0, ...(w.outbound || {}) },
       queues: { redis_url: secrets.redis_url || '', rabbit_url: secrets.rabbit_url || '' },

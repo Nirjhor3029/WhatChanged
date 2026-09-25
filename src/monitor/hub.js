@@ -5,6 +5,7 @@ import { Tail, kindOf } from './logs.js';
 import { InboundProxy, OutboundProxy } from './proxy.js';
 import { RedisQueues, probeDb, probeRabbit, queueTables } from './queues.js';
 import { parseJobLine, parseOutboundLine, parseRequestLine } from './parse.js';
+import { checkReadOnly, diffResults, isEmptyDiff, resultSig, summarize } from './queries.js';
 
 const LOG_KEEP = 3000; // lines kept per log file
 const REQ_KEEP = 400; // requests kept (bodies included)
@@ -32,6 +33,7 @@ class Hub {
     this.outbound = new OutboundProxy((ev) => this.onRequest(ev));
     this.redis = null;
     this.prevQueues = new Map();
+    this.qstate = new Map(); // watched query id -> { baseline, last, vsBase, changes, error, … }
   }
 
   ws() { return this.store.workspace(this.id); }
@@ -62,18 +64,122 @@ class Hub {
       requests: this.requests.slice(-REQ_KEEP),
       jobs: this.jobs.slice(-300),
       queues: this.queues,
+      queries: this.ws().queries.map((q) => this.queryPayload(q)),
       status: this.status(),
     });
     const ping = setInterval(() => res.write(': ping\n\n'), 20000);
     res.on('close', () => {
       clearInterval(ping);
       this.clients.delete(res);
-      if (!this.clients.size) { clearInterval(this.qTimer); this.qTimer = null; }
+      if (!this.clients.size) {
+        clearInterval(this.qTimer); this.qTimer = null;
+        clearInterval(this.queryTimer); this.queryTimer = null;
+      }
     });
     if (!this.qTimer) {
       this.qTimer = setInterval(() => this.pollQueues(), 3000);
       this.pollQueues();
     }
+    // Watched queries run only while a WhatChanged tab is open.
+    if (!this.queryTimer) {
+      this.queryTimer = setInterval(() => this.runDueQueries(), 1000);
+      this.runDueQueries();
+    }
+  }
+
+  /* ------------------------------------------------------ watched queries */
+
+  qs(id) {
+    if (!this.qstate.has(id)) this.qstate.set(id, { baseline: null, last: null, lastSig: null, vsBase: null, changes: [], error: null, ranAt: null, ms: 0, next: 0 });
+    return this.qstate.get(id);
+  }
+
+  queryPayload(q) {
+    const st = this.qs(q.id);
+    return {
+      ...q, result: st.last, vsBase: st.vsBase, changes: st.changes.slice(0, 20), error: st.error,
+      ranAt: st.ranAt, ms: st.ms, baseAt: st.baseAt || null, changedAt: st.changedAt || null, running: !!st.running,
+    };
+  }
+
+  /** Forget results of queries that were deleted or edited. */
+  syncQueries() {
+    const list = this.ws().queries;
+    for (const id of [...this.qstate.keys()]) {
+      const q = list.find((x) => x.id === id);
+      const st = this.qstate.get(id);
+      if (!q || st.sig !== `${q.text}\u0000${q.key || ''}`) this.qstate.delete(id);
+    }
+    this.send({ type: 'queries', queries: list.map((q) => this.queryPayload(q)) });
+  }
+
+  async runDueQueries() {
+    if (this.queryBusy) return;
+    this.queryBusy = true;
+    try {
+      for (const q of this.ws().queries) {
+        const st = this.qs(q.id);
+        if (q.paused || !q.interval || Date.now() < st.next) continue;
+        await this.runQuery(q);
+      }
+    } finally {
+      this.queryBusy = false;
+    }
+  }
+
+  async runQuery(q) {
+    const st = this.qs(q.id);
+    st.sig = `${q.text}\u0000${q.key || ''}`;
+    st.running = true;
+    const t0 = Date.now();
+    try {
+      const conn = this.store.connection(this.id);
+      const driver = await getDriver(conn);
+      const res = await driver.runQuery(driver.kind === 'mongodb' ? q.text : checkReadOnly(q.text));
+      const now = new Date().toISOString();
+      const hadError = !!st.error;
+      Object.assign(st, { error: null, ms: Date.now() - t0, ranAt: now });
+      if (!st.baseline) { st.baseline = res; st.baseAt = now; }
+      const sig = resultSig(res);
+      if (sig !== st.lastSig || hadError) {
+        const vsLast = st.last ? diffResults(st.last, res, q.key) : null;
+        st.last = res;
+        st.lastSig = sig;
+        st.vsBase = diffResults(st.baseline, res, q.key);
+        if (vsLast && !isEmptyDiff(vsLast)) {
+          st.changedAt = now;
+          st.changes.unshift({ at: now, summary: summarize(vsLast), cells: vsLast.changed.slice(0, 5), added: vsLast.added.length, removed: vsLast.removed.length });
+          if (st.changes.length > 30) st.changes.length = 30;
+        }
+        this.send({ type: 'query', q: this.queryPayload(q), changed: !!(vsLast && !isEmptyDiff(vsLast)) });
+      } else {
+        this.send({ type: 'query-tick', id: q.id, ranAt: now, ms: st.ms });
+      }
+    } catch (e) {
+      const msg = e.message || String(e);
+      const changed = st.error !== msg;
+      Object.assign(st, { error: msg, ms: Date.now() - t0, ranAt: new Date().toISOString() });
+      this.send(changed ? { type: 'query', q: this.queryPayload(q) } : { type: 'query-tick', id: q.id, ranAt: st.ranAt, ms: st.ms, error: msg });
+    } finally {
+      st.running = false;
+      st.next = Date.now() + Math.max(2, Number(q.interval) || 3) * 1000;
+    }
+    return this.queryPayload(q);
+  }
+
+  /** "Compare from now on": run the query now (a paused one may be stale) and use that result as the baseline. */
+  async setQueryBaseline(q) {
+    await this.runQuery(q);
+    const st = this.qs(q.id);
+    if (st.last && !st.error) {
+      st.baseline = st.last;
+      st.baseAt = new Date().toISOString();
+      st.vsBase = diffResults(st.baseline, st.last, q.key);
+      st.changes = [];
+      st.changedAt = null;
+    }
+    this.send({ type: 'query', q: this.queryPayload(q) });
+    return this.queryPayload(q);
   }
 
   push(res, ev) { res.write(`data: ${JSON.stringify(ev)}\n\n`); }

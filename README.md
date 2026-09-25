@@ -18,7 +18,10 @@ Database rows, log lines, API calls and background jobs — for **any language, 
 
 <br>
 
-<table>
+<img src="images/overview-live.png" alt="WhatChanged live overview: changed tables glow and show the exact change" width="100%">
+
+
+<!-- <table>
     <tr>
         <td width="50%" valign="top">
             <img src="images/hero.png" alt="WhatChanged start screen: pick a database and connect" width="100%">
@@ -27,7 +30,7 @@ Database rows, log lines, API calls and background jobs — for **any language, 
             <img src="images/overview-live.png" alt="WhatChanged live overview: changed tables glow and show the exact change" width="100%">
         </td>
     </tr>
-</table>
+</table> -->
 
 <sub>You place an order in your app — WhatChanged lights up every table that changed and tells you exactly what changed in it.</sub>
 

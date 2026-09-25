@@ -1,0 +1,24 @@
+{
+  "name": "db-checker",
+  "version": "1.0.0",
+  "description": "Snapshot any database (MySQL, MariaDB, PostgreSQL, SQL Server, SQLite, MongoDB) and see exactly which tables, rows and columns your code changed.",
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "db-checker": "server.js"
+  },
+  "scripts": {
+    "start": "node server.js --open",
+    "serve": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "mongodb": "^7.6.0",
+    "mssql": "^12.7.2",
+    "mysql2": "^3.24.4",
+    "pg": "^8.23.0"
+  }
+}

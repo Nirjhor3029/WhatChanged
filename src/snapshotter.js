@@ -1,6 +1,7 @@
 import { config } from './config.js';
 import { getDriver } from './drivers/index.js';
 import { buildRelations } from './relations.js';
+import { Differ } from './differ.js';
 import { columnSig, fileSafe, snapshotId } from './util.js';
 
 /**
@@ -156,12 +157,65 @@ export class Snapshotter {
       const fps = await db.fingerprints(check);
       for (const t of check) {
         if (fps[t.name] !== undefined && fps[t.name] !== t.checksum) {
-          changes.push({ table: t.name, kind: 'data', before: t.rows || 0, after: await safeCount(db, t) });
+          changes.push({ table: t.name, kind: 'data', before: t.rows || 0, after: await safeCount(db, t), fp: fps[t.name] });
         }
       }
     }
+    // fp lets the UI know when a table changed *again* (to refresh its "what changed" preview)
+    for (const c of changes) c.fp ||= `${c.kind}:${c.after}:${liveTables[c.table]?.schema_sig || ''}`;
     changes.sort((a, b) => a.table.localeCompare(b.table));
     return { base: baseId, checked_at: new Date().toISOString(), changes };
+  }
+
+  /**
+   * Live "what changed" for some tables: rows fetched right now compared with the
+   * baseline snapshot — exact inserted / updated (old → new) / deleted rows,
+   * without saving a snapshot.
+   */
+  async peek(conn, baseId, names) {
+    const base = this.store.meta(conn.id, baseId);
+    const db = await getDriver(conn);
+    const live = await db.liveState();
+    let schema = null;
+    const out = {};
+    for (const name of names) {
+      try {
+        const a = base.tables[name]?.type === 'table' ? base.tables[name] : null;
+        const differ = new Differ(this.store, conn.id);
+        if (!live[name]) {
+          out[name] = a ? { ...differ.droppedTable(a), impact: null } : null;
+          continue;
+        }
+        let b;
+        const sig = live[name].schema_sig;
+        if (!a || (sig && sig !== a.schema_sig)) {
+          schema ||= await db.schema();
+          b = structuredClone(schema.tables[name]);
+        } else {
+          b = { ...a };
+        }
+        if (!b) { out[name] = null; continue; }
+        b.rows = await db.count(b);
+        const cols = b.columns.map((c) => c.name);
+        let res;
+        if (b.rows <= config.rowLimit) {
+          b.mode = 'full';
+          res = await db.fetchRows(b, cols);
+        } else if (b.rowkey.length) {
+          b.mode = 'tail';
+          res = await db.fetchRows(b, cols, { key: b.rowkey, limit: config.tailRows, desc: true });
+        } else {
+          b.mode = 'none';
+          res = { cols, rows: [] };
+        }
+        if (res.columns) { b.columns = res.columns; b.schema_sig = columnSig(res.columns); }
+        b.checksum = null;
+        out[name] = differ.peek(base, a, b, { table: name, cols: res.cols, key: b.rowkey, mode: b.mode, rows: res.rows });
+      } catch (e) {
+        out[name] = { name, error: e.message };
+      }
+    }
+    return out;
   }
 }
 

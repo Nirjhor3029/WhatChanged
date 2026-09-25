@@ -159,9 +159,15 @@ export class MssqlDriver {
     return out;
   }
 
-  async fetchRows(t, cols, { key = [], limit = null, desc = false } = {}) {
-    let text = `SELECT ${limit !== null ? `TOP (${Number(limit)}) ` : ''}${cols.map(qi).join(', ')} FROM ${this.qt(t)}`;
-    if (limit !== null && key.length) text += ' ORDER BY ' + key.map((k) => qi(k) + (desc ? ' DESC' : '')).join(', ');
+  async fetchRows(t, cols, { key = [], limit = null, desc = false, offset = 0 } = {}) {
+    let text;
+    if (limit !== null && offset) {
+      const order = key.length ? key.map((k) => qi(k) + (desc ? ' DESC' : '')).join(', ') : '(SELECT NULL)';
+      text = `SELECT ${cols.map(qi).join(', ')} FROM ${this.qt(t)} ORDER BY ${order} OFFSET ${Number(offset)} ROWS FETCH NEXT ${Number(limit)} ROWS ONLY`;
+    } else {
+      text = `SELECT ${limit !== null ? `TOP (${Number(limit)}) ` : ''}${cols.map(qi).join(', ')} FROM ${this.qt(t)}`;
+      if (limit !== null && key.length) text += ' ORDER BY ' + key.map((k) => qi(k) + (desc ? ' DESC' : '')).join(', ');
+    }
     const req = this.pool.request();
     req.arrayRowMode = true;
     const res = await req.query(text);

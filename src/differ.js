@@ -2,6 +2,9 @@ import { config } from './config.js';
 import { around, buildRelations } from './relations.js';
 import { cut, keyBy, md5 } from './util.js';
 
+export const PAGE = 50; // rows kept inline per list; the rest are served page by page
+const LISTS = ['inserted_rows', 'updated_rows', 'deleted_rows'];
+
 const LABEL_COLS = ['name', 'title', 'full_name', 'fullName', 'username', 'email', 'label', 'slug', 'code', 'sku',
   'first_name', 'firstName', 'invoice_no', 'order_no', 'orderNumber', 'number', 'subject', 'phone'];
 
@@ -71,8 +74,37 @@ export class Differ {
       triggers: this.triggerChanges(A, B),
       edges: edgesB.filter((e) => e.type !== 'morph' && (changed.includes(e.from) || changed.includes(e.to))),
     };
+    for (const e of result.tables) {
+      pageOut(e, (full) => this.store.writeJson(this.store.diffRowsPath(this.conn, from, to, e.name), full, true));
+    }
     this.store.writeJson(cacheFile, result);
     return result;
+  }
+
+  /** One page of a change list (inserted_rows / updated_rows / deleted_rows) of a report. */
+  rowsPage(from, to, table, kind, page = 0, size = PAGE) {
+    if (!LISTS.includes(kind)) throw new Error('Unknown list');
+    const report = this.diff(from, to);
+    const e = report.tables.find((t) => t.name === table);
+    if (!e?.data) return { total: 0, items: [] };
+    const list = e.data.paged ? (this.store.readJson(this.store.diffRowsPath(this.conn, from, to, table))?.[kind] || []) : e.data[kind];
+    return { total: list.length, items: list.slice(page * size, page * size + size) };
+  }
+
+  /**
+   * Live "what changed" for one table: baseline snapshot vs. rows fetched right now.
+   * `b` is the live table meta, `live` its rows ({cols, key, mode, rows}).
+   */
+  peek(A, a, b, live) {
+    this.A = A;
+    this.B = { ...A, tables: { ...A.tables, [b.name]: b } };
+    b.data_ref = '__live__';
+    b.data_file = 'rows';
+    this.rowCache.set('__live__/rows', live);
+    const entry = a ? this.compareTable(a, b) : this.newTable(b);
+    if (!entry) return null;
+    entry.impact = this.impact(b.name, entry, buildRelations(this.B), [b.name], this.B);
+    return entry;
   }
 
   /* -------------------------------------------------------------- tables */
@@ -100,7 +132,7 @@ export class Differ {
     const list = [];
     if (rowsB) {
       const ki = idx(rowsB.cols, b.rowkey);
-      for (const r of rowsB.rows.slice(0, config.maxList)) list.push({ key: keyString(r, ki), row: zip(rowsB.cols, r) });
+      for (const r of rowsB.rows) list.push({ key: keyString(r, ki), row: zip(rowsB.cols, r) });
     }
     return {
       name: b.name, status: 'new', rows_before: 0, rows_after: b.rows ?? 0, columns: b.columns.map((c) => c.name), key: b.rowkey,
@@ -186,7 +218,6 @@ export class Differ {
       if (db.mode === 'tail') minB = minKey(mapB.keys());
     }
 
-    const max = config.maxList;
     const changedCols = {};
     for (const [k, rb] of mapB) {
       const ra = mapA.get(k);
@@ -200,21 +231,21 @@ export class Differ {
         if (n) {
           res.updated++;
           for (const c of Object.keys(changes)) changedCols[c] = (changedCols[c] || 0) + 1;
-          if (res.updated_rows.length < max) res.updated_rows.push({ key: keyString(rb, kiB), row: zip(db.cols, rb), changes });
+          res.updated_rows.push({ key: keyString(rb, kiB), row: zip(db.cols, rb), changes });
         }
         continue;
       }
       if (res.mode === 'count') continue;
       if (minA !== null && cmp(k, minA) < 0) continue; // below A's captured window → unknown
       res.inserted++;
-      if (res.inserted_rows.length < max) res.inserted_rows.push({ key: useKey ? keyString(rb, kiB) : '', row: zip(db.cols, rb) });
+      res.inserted_rows.push({ key: useKey ? keyString(rb, kiB) : '', row: zip(db.cols, rb) });
     }
     if (res.mode !== 'count') {
       for (const [k, ra] of mapA) {
         if (mapB.has(k)) continue;
         if (minB !== null && cmp(k, minB) < 0) continue;
         res.deleted++;
-        if (res.deleted_rows.length < max) res.deleted_rows.push({ key: useKey ? keyString(ra, kiA) : '', row: zip(da.cols, ra) });
+        res.deleted_rows.push({ key: useKey ? keyString(ra, kiA) : '', row: zip(da.cols, ra) });
       }
     } else {
       res.inserted = Math.max(0, delta);
@@ -326,6 +357,21 @@ export class Differ {
       removed: Object.keys(ta).filter((n) => !(n in tb)),
       changed: Object.keys(tb).filter((n) => n in ta && ta[n] !== tb[n]),
     };
+  }
+}
+
+/**
+ * Keep only the first PAGE rows of each change list inline; hand the complete
+ * lists to `save` when any list is longer. `listed` holds the full list sizes.
+ */
+export function pageOut(e, save, size = PAGE) {
+  if (!e.data) return;
+  e.data.listed = Object.fromEntries(LISTS.map((k) => [k, e.data[k].length]));
+  e.data.page_size = size;
+  if (LISTS.some((k) => e.data[k].length > size)) {
+    save?.(Object.fromEntries(LISTS.map((k) => [k, e.data[k]])));
+    for (const k of LISTS) e.data[k] = e.data[k].slice(0, size);
+    e.data.paged = true;
   }
 }
 

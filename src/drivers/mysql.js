@@ -131,10 +131,10 @@ export class MysqlDriver {
     return out;
   }
 
-  async fetchRows(t, cols, { key = [], limit = null, desc = false } = {}) {
+  async fetchRows(t, cols, { key = [], limit = null, desc = false, offset = 0 } = {}) {
     let sql = `SELECT ${cols.map(q).join(', ')} FROM ${q(t.name)}`;
     if (limit !== null && key.length) sql += ' ORDER BY ' + key.map((k) => q(k) + (desc ? ' DESC' : '')).join(', ');
-    if (limit !== null) sql += ' LIMIT ' + Number(limit);
+    if (limit !== null) sql += ' LIMIT ' + Number(limit) + (offset ? ' OFFSET ' + Number(offset) : '');
     const [rows] = await this.conn.query({ sql, rowsAsArray: true });
     return { cols, rows: rows.map((r) => r.map(norm)) };
   }

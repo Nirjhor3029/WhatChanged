@@ -3,7 +3,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import crypto from 'node:crypto';
 import { config } from './config.js';
-import { safeId } from './util.js';
+import { fileSafe, safeId } from './util.js';
 
 /**
  * File based storage (JSON). Layout:
@@ -177,6 +177,7 @@ export class Storage {
   }
 
   diffPath(conn, from, to) { return path.join(this.connDir(conn), 'diffs', `${safeId(from)}__${safeId(to)}.json`); }
+  diffRowsPath(conn, from, to, table) { return path.join(this.connDir(conn), 'diffs', `${safeId(from)}__${safeId(to)}`, `${fileSafe(table)}.json.gz`); }
 
   /**
    * Later snapshots may share row files with this one (unchanged tables are not
@@ -211,7 +212,7 @@ export class Storage {
     fs.rmSync(this.snapDir(conn, snap), { recursive: true, force: true });
     const diffs = path.join(this.connDir(conn), 'diffs');
     if (fs.existsSync(diffs)) {
-      for (const f of fs.readdirSync(diffs)) if (f.includes(snap)) fs.rmSync(path.join(diffs, f), { force: true });
+      for (const f of fs.readdirSync(diffs)) if (f.includes(snap)) fs.rmSync(path.join(diffs, f), { recursive: true, force: true });
     }
   }
 }

@@ -122,6 +122,8 @@
     conns: [], conn: null, snaps: [], meta: null, baseline: null,
     watch: { on: false, timer: null, busy: false, changes: [], checked: null, error: null, known: new Set() },
     filter: '', sort: ls.get('sort', 'rows'), view: null, report: null,
+    peek: {}, // table -> { fp, entry, loading }: exact live changes vs. baseline
+    tileLimit: 60,
   };
 
   /* ================================================================ router */
@@ -130,6 +132,7 @@
 
   async function route() {
     closeDrawer();
+    PG.clear(); // pagers of the previous page are gone
     const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
     try {
       if (parts[0] === 'c' && parts[1]) {
@@ -174,6 +177,7 @@
     ls.set('base:' + S.conn.id, id);
     S.watch.changes = [];
     S.watch.known = new Set();
+    S.peek = {};
     if (S.watch.on) tick();
   }
 
@@ -587,8 +591,8 @@
       <section class="tiles" id="tiles"></section>`, 'overview');
     renderTiles(true);
     bindJourney();
-    $('#q').oninput = (e) => { S.filter = e.target.value; renderTiles(); };
-    $('#sort').onchange = (e) => { S.sort = e.target.value; ls.set('sort', S.sort); renderTiles(); };
+    $('#q').oninput = (e) => { S.filter = e.target.value; S.tileLimit = TILE_PAGE; renderTiles(); };
+    $('#sort').onchange = (e) => { S.sort = e.target.value; ls.set('sort', S.sort); S.tileLimit = TILE_PAGE; renderTiles(); };
   }
 
   const compact = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(1) + 'K' : fmt(n));
@@ -619,6 +623,8 @@
       box.innerHTML = `<div class="empty" style="grid-column:1/-1">${ic('search')}<div>No ${v.tables} match “${esc(S.filter)}”.</div></div>`;
       return;
     }
+    const total = list.length;
+    list = list.slice(0, S.tileLimit);
     box.innerHTML = list.map((t, i) => {
       const ch = changes[t.name];
       const delta = ch && ch.after !== null ? ch.after - ch.before : 0;
@@ -630,12 +636,67 @@
           <div class="tile-rows">${fmt(ch && ch.after !== null ? ch.after : t.rows)}<small>${v.rows}</small></div>
           <div class="tile-meta"><span>${t.columns.length} ${v.cols}</span><span>${bytes((t.data_size || 0) + (t.index_size || 0))}</span>${relCount(t.name) ? `<span>⇄ ${relCount(t.name)}</span>` : ''}</div>
           <div class="tile-bar"><i style="width:${pct}%"></i></div>
+          ${ch ? peekLine(t.name) : ''}
         </button>`;
-    }).join('');
+    }).join('') + (total > list.length ? `
+      <div class="tiles-more"><button class="btn" data-more>${ic('plus')}Show ${fmt(Math.min(TILE_PAGE, total - list.length))} more <span class="muted">(${fmt(total - list.length)} hidden)</span></button>
+      <button class="btn ghost" data-more="all">Show all ${fmt(total)}</button></div>` : '');
     box.onclick = (e) => {
+      const more = e.target.closest('[data-more]');
+      if (more) { S.tileLimit = more.dataset.more === 'all' ? Infinity : S.tileLimit + TILE_PAGE; return renderTiles(); }
       const t = e.target.closest('[data-table]');
-      if (t) openTable(t.dataset.table);
+      if (t) openTable(t.dataset.table, S.watch.changes.some((c) => c.table === t.dataset.table) ? 'changes' : 'columns');
     };
+  }
+
+  const TILE_PAGE = 60;
+
+  /** One-line preview of the live change on a tile, e.g. "#5 stock: 25 → 24". */
+  function peekLine(name) {
+    const p = S.peek[name];
+    if (!p) return '';
+    if (p.loading && !p.entry) return `<div class="tile-peek dim"><span class="spinner"></span>reading change…</div>`;
+    const e = p.entry;
+    if (!e || e.error) return '';
+    const D = e.data || {};
+    const u = D.updated_rows?.[0];
+    const keys = (list) => list?.filter((r) => r.key).slice(0, 3).map((r) => '#' + r.key).join(', ');
+    let k;
+    let t;
+    if (u) {
+      const [c, [o, n]] = Object.entries(u.changes)[0];
+      k = 'upd';
+      t = `${D.updated > 1 ? '~' + fmt(D.updated) + ' · ' : ''}${u.key ? '#' + u.key + ' ' : ''}${c}: ${short(o, 14)} → ${short(n, 14)}`;
+    } else if (D.inserted) {
+      k = 'ins';
+      t = `+${fmt(D.inserted)} new ${D.inserted === 1 ? V().row : V().rows}${keys(D.inserted_rows) ? ': ' + keys(D.inserted_rows) : ''}`;
+    } else if (D.deleted) {
+      k = 'del';
+      t = `−${fmt(D.deleted)} deleted${keys(D.deleted_rows) ? ': ' + keys(D.deleted_rows) : ''}`;
+    } else if (e.schema) {
+      k = 'sch';
+      t = schemaBrief(e.schema);
+    } else return '';
+    const kinds = [D.inserted, D.updated, D.deleted, e.schema].filter(Boolean).length;
+    return `<div class="tile-peek ${k}" title="${esc(t)}">${esc(t)}${kinds > 1 ? ` <b>+${kinds - 1}</b>` : ''}</div>`;
+  }
+
+  /** Fetch exact live changes for changed tables so tiles can show them right away. */
+  async function autoPeek() {
+    const base = S.baseline;
+    const todo = S.watch.changes
+      .filter((c) => c.kind !== 'dropped' && (c.after ?? 0) <= 20000)
+      .filter((c) => S.peek[c.table]?.fp !== c.fp && !S.peek[c.table]?.loading)
+      .slice(0, 6);
+    if (!todo.length || !S.conn) return;
+    for (const c of todo) S.peek[c.table] = { ...(S.peek[c.table] || {}), loading: true };
+    let res = {};
+    try {
+      res = await api('peek', { conn: S.conn.id, base, tables: todo.map((c) => c.table) });
+    } catch { /* preview is optional */ }
+    if (S.baseline !== base) return;
+    for (const c of todo) S.peek[c.table] = { fp: c.fp, entry: res[c.table] || null, loading: false };
+    if (S.view === 'overview') renderTiles();
   }
 
   /* ================================================================ journey bar + watch */
@@ -712,7 +773,9 @@
       w.changes = r.changes;
       w.checked = r.checked_at;
       w.known = new Set(r.changes.map((c) => c.table + c.kind + c.after));
+      for (const t of Object.keys(S.peek)) if (!r.changes.some((c) => c.table === t)) delete S.peek[t];
       updateWatchUi(fresh.map((c) => c.table));
+      autoPeek();
       if (fresh.length && S.view !== 'overview') toast(`${fresh.map((c) => `<code>${esc(c.table)}</code>`).join(', ')} changed`, 'warn', 3000);
     } catch (e) {
       w.error = e.message;
@@ -757,12 +820,14 @@
 
   function openTable(name, tab = 'columns') {
     const v = V();
-    const t = S.meta.tables[name];
+    const ch = S.watch.changes.find((c) => c.table === name);
+    // A table created after the last snapshot only exists live.
+    const t = S.meta.tables[name] || (ch ? { name, rows: ch.after, columns: [], indexes: [], rowkey: [], data_size: 0, index_size: 0 } : null);
     if (!t) return toast(`<code>${esc(name)}</code> is not in the latest snapshot yet — capture one first.`, 'warn');
+    if (tab === 'changes' && !ch) tab = 'columns';
     const edges = (S.meta.edges || []);
     const parents = edges.filter((e) => e.from === name);
     const children = edges.filter((e) => e.to === name && e.from !== name);
-    const ch = S.watch.changes.find((c) => c.table === name);
     $('#drawer').innerHTML = `
       <div class="scrim" data-close></div>
       <aside class="panel" role="dialog" aria-label="${esc(name)}">
@@ -775,6 +840,7 @@
         </div>
         <div class="panel-b">
           <div class="subtabs">
+            ${ch ? `<button class="subtab hot ${tab === 'changes' ? 'on' : ''}" data-tab="changes"><span class="live-dot on alert"></span>What changed</button>` : ''}
             <button class="subtab ${tab === 'columns' ? 'on' : ''}" data-tab="columns">${v.Cols}</button>
             <button class="subtab ${tab === 'rel' ? 'on' : ''}" data-tab="rel">Relations (${parents.length + children.length})</button>
             <button class="subtab ${tab === 'data' ? 'on' : ''}" data-tab="data">Latest ${v.rows}</button>
@@ -789,9 +855,32 @@
       if (tb) { $$('.subtab').forEach((x) => x.classList.toggle('on', x === tb)); body(tb.dataset.tab); }
       const go = e.target.closest('[data-goto]');
       if (go) openTable(go.dataset.goto, 'rel');
+      if (e.target.closest('[data-repeek]')) { delete S.peek[name]; body('changes'); }
+      if (e.target.closest('[data-capture]')) { closeDrawer(); captureAndCompare(); }
     };
     const body = (which) => {
       const box = $('#drawerBody');
+      if (which === 'changes') {
+        const base = snapById(S.baseline);
+        const render = (entry) => {
+          if (!$('#drawerBody')) return;
+          const head = `<div class="spot-intro">${ic('flag')}<span>Live now vs. <b>${esc(base?.label || 'baseline')}</b> <span class="muted">(${ago(base?.created_at)})</span></span>
+            <span class="spacer"></span><button class="btn sm ghost" data-repeek>${ic('refresh')}Refresh</button></div>`;
+          if (!entry) { box.innerHTML = head + `<div class="note">${ic('info')}<span>No row differences any more — the change may have been undone.</span></div>`; return; }
+          if (entry.error) { box.innerHTML = head + `<div class="form-msg err">${esc(entry.error)}</div>`; return; }
+          box.innerHTML = head + spotlight(entry, v, { api: 'peek.rows', args: { conn: S.conn.id, base: S.baseline } }, 15) +
+            `<div class="sec row"><span class="muted" style="font-size:12.5px">Want this saved with the related ${v.tables} and code hints?</span><span class="spacer"></span>
+              <button class="btn primary sm" data-capture>${ic('camera')}Capture & compare</button></div>`;
+        };
+        const p = S.peek[name];
+        if (p?.entry && p.fp === ch.fp) return render(p.entry);
+        box.innerHTML = `<div class="skeleton" style="height:48px;margin-bottom:10px"></div><div class="skeleton" style="height:180px"></div>`;
+        const fp = ch.fp;
+        api('peek', { conn: S.conn.id, base: S.baseline, tables: [name] })
+          .then((res) => { S.peek[name] = { fp, entry: res[name] || null }; render(res[name]); })
+          .catch((err) => { box.innerHTML = `<div class="form-msg err">${esc(err.message)}</div>`; });
+        return;
+      }
       if (which === 'columns') {
         box.innerHTML = `
           <div class="dtable-wrap"><table class="dtable"><thead><tr><th>${v.Col}</th><th>Type</th><th>Null</th><th>Default</th><th>Key</th><th>Extra</th></tr></thead><tbody>
@@ -820,10 +909,17 @@
           <div class="sec"><div class="note">${ic('info')}<span>“Inferred” relations are guessed from names like <code>user_id</code> → <code>users</code>, because many apps don't declare foreign keys.</span></div></div>`;
       } else {
         box.innerHTML = `<div class="skeleton" style="height:240px"></div>`;
-        api('rows', { conn: S.conn.id, table: name, snap: S.meta.id, limit: 40 }).then((r) => {
+        const size = 50;
+        const snap = S.meta.tables[name] ? S.meta.id : undefined;
+        api('rows', { conn: S.conn.id, table: name, snap, limit: size }).then((r) => {
           if (!$('#drawerBody')) return;
-          box.innerHTML = `<div class="muted" style="margin-bottom:8px;font-size:12.5px">Live from the database · newest ${r.rows.length} of ${fmt(r.total)} ${v.rows}</div>
-            ${dataTable(r.columns, r.rows.map((row) => ({ row: Object.fromEntries(r.columns.map((c, i) => [c, row[i]])) })), '', r.key)}`;
+          const items = (rows) => rows.map((row) => ({ row: Object.fromEntries(r.columns.map((c, i) => [c, row[i]])) }));
+          const load = async (page) => {
+            const x = await api('rows', { conn: S.conn.id, table: name, snap, limit: size, offset: page * size, count: false });
+            return dataTable(r.columns, items(x.rows), '', r.key);
+          };
+          box.innerHTML = `<div class="muted" style="margin-bottom:8px;font-size:12.5px">Live from the database · newest first · ${fmt(r.total)} ${v.rows} in total</div>
+            ${pagedBox(r.total, size, dataTable(r.columns, items(r.rows), '', r.key), load)}`;
         }).catch((e) => { box.innerHTML = `<div class="form-msg err">${esc(e.message)}</div>`; });
       }
     };
@@ -853,6 +949,170 @@
         return `<td class="${key.includes(c) ? 'kcol' : ''}">${cellHtml(it.row[c])}${refHtml(it.refs?.[c])}</td>`;
       }).join('')}</tr>`).join('')}
     </tbody></table></div>`;
+  }
+
+  /* ================================================================ pagination */
+  // Every long list is shown one page at a time; later pages are fetched on demand.
+  const PG = new Map();
+  let pgSeq = 0;
+
+  /** A paged box: first page inline, other pages via load(page) → html. */
+  function pagedBox(total, size, firstHtml, load) {
+    const id = 'pg' + ++pgSeq;
+    PG.set(id, { total, size, page: 0, load });
+    return `<div class="pbox" id="${id}"><div class="pbody">${firstHtml}</div>${pagerBar(id)}</div>`;
+  }
+
+  function pagerBar(id) {
+    const p = PG.get(id);
+    const pages = Math.max(1, Math.ceil(p.total / p.size));
+    if (pages <= 1) return '';
+    const from = p.page * p.size + 1;
+    const to = Math.min(p.total, (p.page + 1) * p.size);
+    return `<div class="pager" data-pager="${id}">
+      <button class="btn sm icon" data-pg="first" ${p.page === 0 ? 'disabled' : ''} title="First page">«</button>
+      <button class="btn sm icon" data-pg="prev" ${p.page === 0 ? 'disabled' : ''} title="Previous page">‹</button>
+      <span class="pg-mid">Page <input class="input pg-in" value="${p.page + 1}" inputmode="numeric" aria-label="Page number"> of ${fmt(pages)}</span>
+      <button class="btn sm icon" data-pg="next" ${p.page >= pages - 1 ? 'disabled' : ''} title="Next page">›</button>
+      <button class="btn sm icon" data-pg="last" ${p.page >= pages - 1 ? 'disabled' : ''} title="Last page">»</button>
+      <span class="muted pg-range">${fmt(from)}–${fmt(to)} of ${fmt(p.total)}</span>
+    </div>`;
+  }
+
+  async function goPage(id, page) {
+    const p = PG.get(id);
+    const box = document.getElementById(id);
+    if (!p || !box || p.busy) return;
+    const pages = Math.max(1, Math.ceil(p.total / p.size));
+    page = Math.max(0, Math.min(pages - 1, page));
+    if (page === p.page) { const inp = box.querySelector('.pg-in'); if (inp) inp.value = page + 1; return; }
+    const body = box.querySelector('.pbody');
+    body.classList.add('loading');
+    p.busy = true;
+    try {
+      body.innerHTML = await p.load(page);
+      p.page = page;
+      box.querySelector(':scope > .pager')?.remove();
+      box.insertAdjacentHTML('beforeend', pagerBar(id));
+      if (box.getBoundingClientRect().top < 70) box.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    } catch (e) {
+      toast(esc(e.message), 'err');
+    } finally {
+      p.busy = false;
+      body.classList.remove('loading');
+    }
+  }
+
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-pg]');
+    if (!b) return;
+    const id = b.closest('[data-pager]').dataset.pager;
+    const p = PG.get(id);
+    if (!p) return;
+    const last = Math.ceil(p.total / p.size) - 1;
+    goPage(id, { first: 0, prev: p.page - 1, next: p.page + 1, last }[b.dataset.pg]);
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !e.target.classList?.contains('pg-in')) return;
+    goPage(e.target.closest('[data-pager]').dataset.pager, (parseInt(e.target.value, 10) || 1) - 1);
+  });
+
+  /** Page of a change list: inline rows when we have them, otherwise ask the server. */
+  async function listPage(e, kind, page, size, src) {
+    const D = e.data;
+    const start = page * size;
+    if (!D.paged || start + size <= D[kind].length) return D[kind].slice(start, start + size);
+    return (await api(src.api, { ...src.args, table: e.name, kind, page, size })).items;
+  }
+  const listTotal = (D, kind) => D.listed?.[kind] ?? D[kind].length;
+
+  /* ================================================================ "what changed" sentences */
+  const LABEL_COLS = ['name', 'title', 'full_name', 'fullName', 'username', 'email', 'label', 'slug', 'code', 'sku', 'first_name', 'firstName', 'invoice_no', 'order_no', 'orderNumber', 'number', 'subject', 'phone'];
+  const short = (v, n = 40) => (v === null || v === undefined ? 'NULL' : String(v).length > n ? String(v).slice(0, n) + '…' : String(v));
+  const valHtml = (v) => (v === null || v === undefined ? '<span class="null">NULL</span>' : `<span title="${esc(String(v).slice(0, 500))}">${esc(short(v, 60))}</span>`);
+
+  function rowLabel(row, skip = []) {
+    const c = LABEL_COLS.find((k) => row && row[k] !== null && row[k] !== undefined && row[k] !== '' && !skip.includes(k));
+    return c ? short(row[c], 36) : '';
+  }
+
+  /** "id = 5 · Keyboard" — tells exactly which row. */
+  function whereHtml(e, it) {
+    const key = e.key || [];
+    const k = it.key ? `${key.length === 1 ? esc(key[0]) + ' = ' : ''}${esc(it.key)}` : 'without key';
+    const lab = rowLabel(it.row, Object.keys(it.changes || {}));
+    return `<code class="cl-key">${k}</code>${lab ? `<span class="cl-lab">${esc(lab)}</span>` : ''}`;
+  }
+
+  function refsInline(refs) {
+    if (!refs) return '';
+    return Object.values(refs).flat().map((r) => `<span class="cl-f ref ${r.missing ? 'missing' : ''}">→ ${esc(r.table)}${r.label ? ': ' + esc(r.label) : ' #' + esc(r.id)}${r.missing ? ' (not found!)' : ''}</span>`).join('');
+  }
+
+  /** One sentence card per changed row. */
+  function changeLines(e, kind, items) {
+    const key = e.key || [];
+    return items.map((it) => {
+      if (kind === 'updated_rows') {
+        return `<div class="cl upd"><span class="cl-ico">~</span><div class="cl-main">
+          <div class="cl-where">Row ${whereHtml(e, it)}</div>
+          <div class="cl-what">${Object.entries(it.changes).map(([c, [o, n]]) => `<span class="cl-chg"><b>${esc(c)}</b><span class="cl-old">${valHtml(o)}</span><span class="arrow">→</span><span class="cl-new">${valHtml(n)}</span></span>`).join('')}${refsInline(it.refs)}</div>
+        </div></div>`;
+      }
+      const ins = kind === 'inserted_rows';
+      const fields = Object.entries(it.row).filter(([c, val]) => !key.includes(c) && val !== null && val !== '').slice(0, 6);
+      return `<div class="cl ${ins ? 'ins' : 'del'}"><span class="cl-ico">${ins ? '+' : '−'}</span><div class="cl-main">
+        <div class="cl-where">${ins ? 'New row' : 'Deleted row'} ${whereHtml(e, it)}</div>
+        <div class="cl-what">${fields.map(([c, val]) => `<span class="cl-f"><b>${esc(c)}</b>${valHtml(val)}</span>`).join('')}${refsInline(it.refs)}</div>
+      </div></div>`;
+    }).join('');
+  }
+
+  function schemaBrief(s) {
+    const bits = [];
+    if (s.columns_added?.length) bits.push('+' + s.columns_added.map((c) => c.name).join(', +'));
+    if (s.columns_removed?.length) bits.push('−' + s.columns_removed.map((c) => c.name).join(', −'));
+    if (s.columns_changed?.length) bits.push('~' + s.columns_changed.map((c) => c.name).join(', ~'));
+    if (s.indexes_added?.length || s.indexes_removed?.length) bits.push('indexes');
+    if (s.fks_added?.length || s.fks_removed?.length) bits.push('foreign keys');
+    return bits.join(' · ');
+  }
+
+  function changeHeadline(e, v) {
+    const D = e.data || {};
+    const out = [];
+    if (e.status === 'new') out.push(`<span class="chip ins">new ${v.table}</span>`);
+    if (e.status === 'dropped') out.push(`<span class="chip del">${v.table} dropped</span>`);
+    if (D.inserted && e.status !== 'new') out.push(`<span class="chip ins">+${fmt(D.inserted)} new ${D.inserted === 1 ? v.row : v.rows}</span>`);
+    if (D.updated) out.push(`<span class="chip upd">~${fmt(D.updated)} updated · ${Object.keys(D.changed_columns || {}).slice(0, 4).map(esc).join(', ')}</span>`);
+    if (D.deleted && e.status !== 'dropped') out.push(`<span class="chip del">−${fmt(D.deleted)} deleted</span>`);
+    if (e.schema && e.status !== 'new') out.push(`<span class="chip sch">◆ ${esc(schemaBrief(e.schema))}</span>`);
+    if (e.rows_before !== null && e.rows_before !== undefined) out.push(`<span class="chip">${fmt(e.rows_before)} → ${fmt(e.rows_after)} ${v.rows}</span>`);
+    return out.join('');
+  }
+
+  /**
+   * "What changed" block: exact rows as sentences — which row, which column, old → new.
+   * src = where further pages come from ({api, args}).
+   */
+  function spotlight(e, v, src, perPage = 10) {
+    const D = e.data;
+    let html = `<div class="spot-head">${changeHeadline(e, v)}</div>`;
+    if (!D) return html + (e.schema ? '' : `<div class="note">${ic('info')}<span>Only the structure changed.</span></div>`);
+    if (D.note) html += `<div class="note">${ic('info')}<span>${esc(D.note)}</span></div>`;
+    const titles = { updated_rows: ['upd', '~ Updated — exact cells'], inserted_rows: ['ins', '+ New rows'], deleted_rows: ['del', '− Deleted rows'] };
+    for (const kind of ['updated_rows', 'inserted_rows', 'deleted_rows']) {
+      const total = listTotal(D, kind);
+      if (!total) continue;
+      const [k, title] = titles[kind];
+      const load = async (page) => changeLines(e, kind, await listPage(e, kind, page, perPage, src));
+      html += `<div class="spot-sec"><div class="sec-h" style="color:var(--${k})">${title} <span class="muted n">${fmt(total)}</span><span class="line"></span></div>
+        ${pagedBox(total, perPage, changeLines(e, kind, D[kind].slice(0, perPage)), load)}</div>`;
+    }
+    if (!listTotal(D, 'updated_rows') && !listTotal(D, 'inserted_rows') && !listTotal(D, 'deleted_rows') && (D.inserted || D.deleted)) {
+      html += `<div class="note">${ic('info')}<span>Row count changed by ${fmt((D.inserted || 0) - (D.deleted || 0))}, but this ${v.table} has no key to tell exactly which ${v.rows}.</span></div>`;
+    }
+    return html;
   }
 
   /* ================================================================ report */
@@ -910,7 +1170,8 @@
       ${hero}
       <section class="report-grid">
         <div class="card"><div class="card-h"><h3>What happened</h3><span class="spacer"></span><span class="chip">${story.length} facts</span></div>
-          <div class="card-b"><div class="story">${story.map((s, i) => `<button class="story-item" data-jump="${esc(s.table || '')}" style="animation-delay:${i * 40}ms"><span class="story-ico ${s.k}">${s.icon}</span><span class="story-text">${s.html}</span></button>`).join('')}</div></div></div>
+          <div class="card-b"><div class="story">${story.map((s, i) => `<button class="story-item ${i >= STORY_LIMIT ? 'hidden' : ''}" data-jump="${esc(s.table || '')}" style="animation-delay:${Math.min(i, STORY_LIMIT) * 40}ms"><span class="story-ico ${s.k}">${s.icon}</span><span class="story-text">${s.html}</span></button>`).join('')}
+            ${story.length > STORY_LIMIT ? `<button class="btn sm ghost" id="storyMore">${ic('chev')}Show all ${story.length} facts</button>` : ''}</div></div></div>
         <div class="card"><div class="card-h"><h3>Impact map</h3><span class="spacer"></span><span class="muted" style="font-size:12px">changed ${v.tables} + their neighbours</span></div>
           <div class="card-b"><div class="graph-box" id="graph"></div></div></div>
       </section>
@@ -920,11 +1181,15 @@
         d.triggers.removed.length && `triggers removed: ${d.triggers.removed.map(esc).join(', ')}`, d.triggers.changed.length && `triggers changed: ${d.triggers.changed.map(esc).join(', ')}`,
       ].filter(Boolean).join(' · ')}</span></div>` : ''}
       <div class="sec-h" style="margin:8px 0 12px">${v.Tables} in detail<span class="line"></span><button class="btn sm ghost" id="toggleAll">Collapse all</button></div>
-      <section id="cards">${tables.map((t, i) => tableCard(t, v, i)).join('')}</section>`, 'report');
+      <section id="cards">${tables.map((t, i) => tableCard(t, v, i, { api: 'diff.rows', args: { conn: S.conn.id, from: d.from.id, to: d.to.id } })).join('')}</section>`, 'report');
 
     bindReportButtons(d);
     drawGraph(d, v);
-    $('.story').onclick = (e) => { const b = e.target.closest('[data-jump]'); if (b?.dataset.jump) jumpTo(b.dataset.jump); };
+    $('.story').onclick = (e) => {
+      if (e.target.closest('#storyMore')) { $$('.story-item.hidden').forEach((x) => x.classList.remove('hidden')); e.target.closest('#storyMore').remove(); return; }
+      const b = e.target.closest('[data-jump]');
+      if (b?.dataset.jump) jumpTo(b.dataset.jump);
+    };
     $('#cards').onclick = (e) => {
       const h = e.target.closest('.tcard-h');
       if (h && !e.target.closest('a,button')) h.parentElement.classList.toggle('collapsed');
@@ -942,6 +1207,7 @@
     loadCodeHints(d);
   }
 
+  const STORY_LIMIT = 12;
   const bigNum = (k, n, label) => `<div class="big-num ${k} ${n ? '' : 'zero'}"><b>${compact(n)}</b><span>${label}</span></div>`;
 
   function jumpTo(name) {
@@ -980,7 +1246,15 @@
         const keys = (D.inserted_rows || []).slice(0, 3).map((r) => r.key).filter(Boolean);
         out.push({ k: 'ins', icon: '+', table: t.name, html: `${plural(D.inserted, 'new ' + v.row, 'new ' + v.rows)} in ${c(t.name)}${keys.length ? ` <span class="muted">(${esc(t.key.join(','))}: ${keys.map(esc).join(', ')}${D.inserted > keys.length ? '…' : ''})</span>` : ''}` });
       }
-      if (D.updated) {
+      if (D.updated && D.updated <= 3 && D.updated_rows?.length === D.updated) {
+        // Few edits: say exactly which cell changed from what to what.
+        for (const r of D.updated_rows) {
+          const where = r.key ? ` ${(t.key || []).length === 1 ? esc(t.key[0]) + ' = ' : '#'}${esc(r.key)}` : '';
+          const lab = rowLabel(r.row, Object.keys(r.changes));
+          const what = Object.entries(r.changes).slice(0, 3).map(([col, [o, n]]) => `${c(col)} <span class="s-old">${esc(short(o, 30))}</span> → <b class="s-new">${esc(short(n, 30))}</b>`).join(', ');
+          out.push({ k: 'upd', icon: '~', table: t.name, html: `${c(t.name)} row${where}${lab ? ` <span class="muted">(${esc(lab)})</span>` : ''}: ${what}${Object.keys(r.changes).length > 3 ? ' …' : ''}` });
+        }
+      } else if (D.updated) {
         const cols = Object.entries(D.changed_columns || {}).slice(0, 4).map(([k]) => c(k)).join(', ');
         out.push({ k: 'upd', icon: '~', table: t.name, html: `${plural(D.updated, v.row, v.rows)} updated in ${c(t.name)}${cols ? ` — changed ${cols}` : ''}` });
       }
@@ -1017,7 +1291,7 @@
     return lines.join('\n');
   }
 
-  function tableCard(t, v, i) {
+  function tableCard(t, v, i, src) {
     const D = t.data || { inserted: 0, updated: 0, deleted: 0, inserted_rows: [], updated_rows: [], deleted_rows: [], changed_columns: {} };
     const stripe = t.status === 'new' ? 'var(--ins)' : t.status === 'dropped' ? 'var(--del)' : D.deleted && !D.inserted ? 'var(--del)' : D.updated ? 'var(--upd)' : D.inserted ? 'var(--ins)' : 'var(--sch)';
     const key = t.key || [];
@@ -1036,7 +1310,8 @@
         ${S.meta?.tables?.[t.name] ? `<button class="btn sm ghost" data-open-table="${esc(t.name)}">${ic('eye')}Inspect</button>` : ''}
       </div><div class="tcard-b">`;
 
-    if (D.note) html += `<div class="note">${ic('info')}<span>${esc(D.note)}</span></div>`;
+    // First thing you see: exactly which rows/cells changed, as sentences.
+    if (t.data) html += `<div class="sec spot">${spotlight(t, v, src, 5)}</div>`;
 
     if (t.schema && t.status !== 'new') {
       const s = t.schema;
@@ -1052,20 +1327,25 @@
       html += `<div class="sec"><div class="sec-h">Structure<span class="line"></span></div><div class="schema-list">${items.join('')}</div></div>`;
     }
 
-    const shown = (n, list) => (n > list.length ? `<span class="muted" style="text-transform:none;letter-spacing:0;font-weight:500">showing ${fmt(list.length)} of ${fmt(n)}</span>` : '');
-    if (D.inserted_rows?.length) {
-      const cols = t.columns.filter((c) => D.inserted_rows.some((r) => c in r.row));
-      html += `<div class="sec"><div class="sec-h" style="color:var(--ins)">+ ${t.status === 'new' ? v.Rows : 'Inserted'} ${shown(D.inserted, D.inserted_rows)}<span class="line"></span></div>${dataTable(cols, D.inserted_rows, 'ins', key)}</div>`;
-    }
-    if (D.updated_rows?.length) {
-      const changedCols = Object.keys(D.changed_columns || {});
-      html += `<div class="sec"><div class="sec-h" style="color:var(--upd)">~ Updated ${shown(D.updated, D.updated_rows)}<span class="line"></span></div>
-        <div class="colfreq" style="margin-bottom:8px">${Object.entries(D.changed_columns || {}).map(([c, n]) => `<span class="chip upd">${esc(c)} ×${fmt(n)}</span>`).join('')}</div>
-        ${dataTable([...key.filter((k) => !changedCols.includes(k)), ...changedCols], D.updated_rows, 'upd', key)}</div>`;
-    }
-    if (D.deleted_rows?.length) {
-      const cols = [...new Set(D.deleted_rows.flatMap((r) => Object.keys(r.row)))];
-      html += `<div class="sec"><div class="sec-h" style="color:var(--del)">− Deleted ${shown(D.deleted, D.deleted_rows)}<span class="line"></span></div>${dataTable(cols, D.deleted_rows, 'del', key)}</div>`;
+    // Full rows as tables, 50 per page, folded away under the sentences.
+    const TABLE_PAGE = 50;
+    const changedCols = Object.keys(D.changed_columns || {});
+    const colsFor = {
+      inserted_rows: (items) => t.columns.filter((c) => items.some((r) => c in r.row)),
+      updated_rows: () => [...key.filter((k) => !changedCols.includes(k)), ...changedCols],
+      deleted_rows: (items) => [...new Set(items.flatMap((r) => Object.keys(r.row)))],
+    };
+    const tables = [['inserted_rows', 'ins', t.status === 'new' ? `+ ${v.Rows}` : '+ Inserted'], ['updated_rows', 'upd', '~ Updated'], ['deleted_rows', 'del', '− Deleted']]
+      .filter(([kind]) => D[kind]?.length)
+      .map(([kind, cls, title]) => {
+        const first = D[kind].slice(0, TABLE_PAGE);
+        const load = async (page) => { const items = await listPage(t, kind, page, TABLE_PAGE, src); return dataTable(colsFor[kind](items), items, cls, key); };
+        return `<div class="sec"><div class="sec-h" style="color:var(--${cls})">${title} <span class="muted n">${fmt(listTotal(D, kind))}</span><span class="line"></span></div>
+          ${kind === 'updated_rows' ? `<div class="colfreq" style="margin-bottom:8px">${Object.entries(D.changed_columns || {}).map(([c, n]) => `<span class="chip upd">${esc(c)} ×${fmt(n)}</span>`).join('')}</div>` : ''}
+          ${pagedBox(listTotal(D, kind), TABLE_PAGE, dataTable(colsFor[kind](first), first, cls, key), load)}</div>`;
+      });
+    if (tables.length) {
+      html += `<details class="rows-details"><summary>${ic('table')}See the full ${v.rows} as tables <span class="muted">(all ${v.cols})</span></summary>${tables.join('')}</details>`;
     }
 
     const im = t.impact || { parents: [], children: [], views: [], triggers: [], orphans: [] };
@@ -1170,7 +1450,8 @@
       for (const n of list) {
         n.vx += (W / 2 - n.x) * 0.0015; n.vy += (H / 2 - n.y) * 0.003;
         n.x += n.vx * 0.5; n.y += n.vy * 0.5; n.vx *= 0.6; n.vy *= 0.6;
-        n.x = Math.max(60, Math.min(W - 60, n.x)); n.y = Math.max(28, Math.min(H - 40, n.y));
+        const r = radius(n);
+        n.x = Math.max(60, Math.min(W - 60, n.x)); n.y = Math.max(r + 12, Math.min(H - r - 48, n.y));
       }
     }
     const t = (s, m) => (s.length > m ? s.slice(0, m - 1) + '…' : s);
@@ -1202,6 +1483,7 @@
 
   /* ================================================================ history */
   let SEL = [];
+  const HIST_PAGE = 20;
   async function viewHistory() {
     S.view = 'history';
     S.snaps = await api('snap.list', { conn: S.conn.id });
@@ -1216,7 +1498,14 @@
         <button class="btn primary" id="newSnap">${ic('camera')}New snapshot</button>
       </div>
       <div class="hist">
-        ${list.map((s, i) => {
+        ${pagedBox(list.length, HIST_PAGE, histItems(0), async (page) => histItems(page))}
+      </div>
+      <div id="cmpBar"></div>`, 'history');
+    renderCompareBar();
+
+    function histItems(page) {
+      return list.slice(page * HIST_PAGE, (page + 1) * HIST_PAGE).map((s, j) => {
+          const i = page * HIST_PAGE + j;
           const prev = list.slice(i + 1).find((x) => x.status === 'complete');
           const dRows = prev && s.status === 'complete' ? s.rows - prev.rows : 0;
           return `<div class="hist-item card ${s.id === S.baseline ? 'base' : ''} ${SEL.includes(s.id) ? 'sel' : ''}" style="animation-delay:${Math.min(i, 12) * 40}ms">
@@ -1233,10 +1522,8 @@
               <button class="btn sm icon ghost danger" data-delete="${s.id}" title="Delete">${ic('trash')}</button>
             </div>
           </div>`;
-        }).join('')}
-      </div>
-      <div id="cmpBar"></div>`, 'history');
-    renderCompareBar();
+        }).join('');
+    }
 
     $('#newSnap').onclick = async () => {
       const label = await promptBox('Name this snapshot', 'e.g. Before checkout', `Snapshot ${list.length + 1}`);

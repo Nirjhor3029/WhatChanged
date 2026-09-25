@@ -7,7 +7,7 @@ import { exec } from 'node:child_process';
 import { config, ROOT } from './src/config.js';
 import { Storage } from './src/storage.js';
 import { Snapshotter } from './src/snapshotter.js';
-import { Differ } from './src/differ.js';
+import { Differ, PAGE, pageOut } from './src/differ.js';
 import { buildRelations } from './src/relations.js';
 import { scanCode } from './src/codescanner.js';
 import { DRIVERS, detectDriver, dropDriver, getDriver, openDriver } from './src/drivers/index.js';
@@ -16,6 +16,9 @@ import { cut, safeId } from './src/util.js';
 const store = new Storage();
 const snapper = new Snapshotter(store);
 const TOKEN = crypto.randomBytes(24).toString('hex');
+// Full change lists of live peeks, so the UI can page through them (kept 10 minutes).
+const peekCache = new Map();
+setInterval(() => { for (const [k, v] of peekCache) if (Date.now() - v.at > 600000) peekCache.delete(k); }, 60000).unref();
 const PUBLIC = path.join(ROOT, 'public');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 
@@ -110,8 +113,42 @@ const actions = {
     if (!t) t = (await d.schema()).tables[b.table];
     if (!t) throw new Error('Table not found');
     const limit = Math.max(1, Math.min(200, Number(b.limit) || 30));
-    const res = await d.fetchRows(t, t.columns.map((x) => x.name), { key: t.rowkey, limit, desc: true });
-    return { columns: res.cols, key: t.rowkey, rows: res.rows, total: await d.count(t) };
+    const offset = Math.max(0, Number(b.offset) || 0);
+    const res = await d.fetchRows(t, t.columns.map((x) => x.name), { key: t.rowkey, limit, offset, desc: true });
+    // Counting a huge table on every page is slow: only count when asked (first page).
+    return { columns: res.cols, key: t.rowkey, rows: res.rows, total: b.count === false ? null : await d.count(t) };
+  },
+
+  'diff.rows': async (b, conn) => {
+    const size = Math.max(1, Math.min(500, Number(b.size) || PAGE));
+    return new Differ(store, conn().id).rowsPage(safeId(b.from), safeId(b.to), String(b.table), String(b.kind), Math.max(0, Number(b.page) || 0), size);
+  },
+
+  'peek': async (b, conn) => {
+    const c = conn();
+    const names = (b.tables || []).filter((x) => typeof x === 'string').slice(0, 20);
+    const res = await snapper.peek(c, safeId(b.base), names);
+    for (const [name, entry] of Object.entries(res)) {
+      peekCache.delete(`${c.id}|${b.base}|${name}`);
+      if (!entry || entry.error) continue;
+      pageOut(entry, (full) => peekCache.set(`${c.id}|${b.base}|${name}`, { full, at: Date.now() }));
+    }
+    return res;
+  },
+
+  'peek.rows': async (b, conn) => {
+    const c = conn();
+    const key = `${c.id}|${b.base}|${b.table}`;
+    let hit = peekCache.get(key);
+    if (!hit) {
+      // cache expired: compute again
+      const res = await snapper.peek(c, safeId(b.base), [String(b.table)]);
+      pageOut(res[b.table] || { data: null }, (full) => peekCache.set(key, (hit = { full, at: Date.now() })));
+    }
+    const list = hit?.full?.[b.kind] || [];
+    const size = Math.max(1, Math.min(500, Number(b.size) || PAGE));
+    const page = Math.max(0, Number(b.page) || 0);
+    return { total: list.length, items: list.slice(page * size, page * size + size) };
   },
 
   'code': async (b, conn) => {

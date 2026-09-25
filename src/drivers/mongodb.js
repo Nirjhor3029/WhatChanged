@@ -151,9 +151,9 @@ export class MongoDriver {
     return out;
   }
 
-  async fetchRows(t, cols, { limit = null, desc = false } = {}) {
+  async fetchRows(t, cols, { limit = null, desc = false, offset = 0 } = {}) {
     const opts = {};
-    if (limit !== null) Object.assign(opts, { sort: { _id: desc ? -1 : 1 }, limit: Number(limit) });
+    if (limit !== null) Object.assign(opts, { sort: { _id: desc ? -1 : 1 }, limit: Number(limit), skip: Number(offset) || 0 });
     const docs = await this.requireDb().collection(t.name).find({}, opts).toArray();
     const columns = MongoDriver.inferColumns(docs, t.indexes || []);
     const all = [...cols.filter((c) => columns.some((x) => x.name === c)), ...columns.map((c) => c.name).filter((c) => !cols.includes(c))];

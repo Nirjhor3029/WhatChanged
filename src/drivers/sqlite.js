@@ -108,10 +108,10 @@ export class SqliteDriver {
     return out;
   }
 
-  async fetchRows(t, cols, { key = [], limit = null, desc = false } = {}) {
+  async fetchRows(t, cols, { key = [], limit = null, desc = false, offset = 0 } = {}) {
     let s = `SELECT ${cols.map(qi).join(', ')} FROM ${qi(t.name)}`;
     if (limit !== null && key.length) s += ' ORDER BY ' + key.map((k) => qi(k) + (desc ? ' DESC' : '')).join(', ');
-    if (limit !== null) s += ' LIMIT ' + Number(limit);
+    if (limit !== null) s += ' LIMIT ' + Number(limit) + (offset ? ' OFFSET ' + Number(offset) : '');
     const rows = this.all(s).map((r) => cols.map((c) => norm(r[c])));
     return { cols, rows };
   }

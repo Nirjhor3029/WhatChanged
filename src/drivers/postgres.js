@@ -174,10 +174,10 @@ export class PostgresDriver {
     return out;
   }
 
-  async fetchRows(t, cols, { key = [], limit = null, desc = false } = {}) {
+  async fetchRows(t, cols, { key = [], limit = null, desc = false, offset = 0 } = {}) {
     let sql = `SELECT ${cols.map(qi).join(', ')} FROM ${this.qt(t)}`;
     if (limit !== null && key.length) sql += ' ORDER BY ' + key.map((k) => qi(k) + (desc ? ' DESC' : '')).join(', ');
-    if (limit !== null) sql += ' LIMIT ' + Number(limit);
+    if (limit !== null) sql += ' LIMIT ' + Number(limit) + (offset ? ' OFFSET ' + Number(offset) : '');
     const res = await this.client.query({ text: sql, rowMode: 'array' });
     return { cols, rows: res.rows.map((r) => r.map(norm)) };
   }

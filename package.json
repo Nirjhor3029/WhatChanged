@@ -2,15 +2,45 @@
   "name": "whatchanged",
   "version": "1.0.0",
   "description": "Click something in your app, see everything it changed: database rows (MySQL, MariaDB, PostgreSQL, SQL Server, SQLite, MongoDB), logs, API calls and background jobs — for any stack.",
-  "keywords": ["database", "diff", "debugging", "developer-tools", "mysql", "postgresql", "mongodb", "sqlite", "logs", "http-proxy", "queues", "laravel", "nodejs"],
+  "keywords": [
+    "database",
+    "diff",
+    "debugging",
+    "developer-tools",
+    "mysql",
+    "postgresql",
+    "mongodb",
+    "sqlite",
+    "logs",
+    "http-proxy",
+    "queues",
+    "laravel",
+    "nodejs"
+  ],
+  "author": "Nirjhor3029 (https://github.com/Nirjhor3029)",
+  "homepage": "https://github.com/Nirjhor3029/WhatChanged#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nirjhor3029/WhatChanged.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Nirjhor3029/WhatChanged/issues"
+  },
   "type": "module",
   "main": "server.js",
   "bin": {
     "whatchanged": "server.js"
   },
+  "files": [
+    "server.js",
+    "src/",
+    "public/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "start": "node server.js --open",
-    "serve": "node server.js"
+    "start": "node server.js",
+    "serve": "node server.js --no-open"
   },
   "engines": {
     "node": ">=22.13"

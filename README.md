@@ -172,14 +172,44 @@ Errors and their stack traces stay together. Tail up to five files at once, from
 
 **Requirements:** [Node.js](https://nodejs.org) **22.13 or newer**. Nothing else — no Docker and no changes to your project.
 
+**Run it instantly** (no install):
+
 ```bash
-git clone https://github.com/Nirjhor3029/whatchanged.git
-cd whatchanged
+npx whatchanged
+```
+
+**Or install it once** and run it from anywhere:
+
+```bash
+npm install -g whatchanged
+whatchanged
+```
+
+**Or run it from source:**
+
+```bash
+git clone https://github.com/Nirjhor3029/WhatChanged.git
+cd WhatChanged
 npm install
 npm start
 ```
 
-Your browser opens **<http://localhost:4477>**. On Windows you can also double-click **`start.bat`**, which installs the dependencies the first time.
+Your browser opens **<http://localhost:4477>**. On Windows you can also double-click **`start.bat`** in the source folder, which installs the dependencies the first time.
+
+<details>
+<summary><b>Command-line options</b></summary>
+
+```text
+whatchanged [options]
+
+  -p, --port <number>   dashboard port (default 4477)
+      --host <address>  address to listen on (default 127.0.0.1)
+      --data <folder>   where connections and snapshots are saved (default ~/.whatchanged)
+      --no-open         don't open the browser
+  -v, --version         print the version
+  -h, --help            show this help
+```
+</details>
 
 <img src="images/hero.png" alt="WhatChanged start screen: pick a database and connect" width="100%">
 
@@ -256,15 +286,17 @@ flowchart LR
 
 ## 🔧 Configuration
 
-Set these as environment variables before `npm start`. All of them are optional.
+Set these as environment variables before starting. All of them are optional, and the command-line options above override them.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `PORT` | `4477` | Port of the dashboard |
 | `DBC_ROW_LIMIT` | `50000` | Tables up to this size are compared row by row |
 | `DBC_TAIL_ROWS` | `2000` | Larger tables compare only their newest N rows (counts stay exact) |
-| `DBC_STORAGE` | `./storage` | Where snapshots and settings are saved |
+| `DBC_STORAGE` | `~/.whatchanged` | Where connections, snapshots and settings are saved |
 | `DBC_HOST` | `127.0.0.1` | Address the dashboard listens on |
+
+Your data lives in your home folder (`~/.whatchanged`, e.g. `C:\Users\you\.whatchanged` on Windows), so it survives updates and reinstalls. A source checkout that already has a `storage/` folder with saved connections keeps using that folder.
 
 The inbound and outbound proxies use ports **4480** and **4481** by default. You can change them on the Requests page.
 
@@ -274,7 +306,7 @@ The inbound and outbound proxies use ports **4480** and **4481** by default. You
 
 - **100% local.** No accounts, no telemetry, and your data never leaves your machine.
 - **Read-only.** WhatChanged runs only `SELECT`, `COUNT`, `CHECKSUM` and metadata queries, and never writes to your database.
-- **Credentials are encrypted** (AES-256-GCM) in `storage/`, with a key generated on your machine.
+- **Credentials are encrypted** (AES-256-GCM) in your data folder, with a key generated on your machine.
 - The dashboard and proxies listen on `127.0.0.1` only. Every API call needs a per-session token, and requests from other hostnames are refused, which blocks DNS rebinding.
 - HTTPS traffic is never decrypted, only timed and measured.
 

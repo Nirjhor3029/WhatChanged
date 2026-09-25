@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { cli } from './src/cli.js'; // first: sets PORT / DBC_STORAGE before config.js is read
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -334,7 +335,7 @@ const server = http.createServer(async (req, res) => {
 
 server.on('error', (e) => {
   if (e.code === 'EADDRINUSE') {
-    console.error(`\n  Port ${config.port} is busy. Start on another port:  set PORT=4488 && npm start\n`);
+    console.error(`\n  Port ${config.port} is busy — is WhatChanged already running? Or pick another port:  whatchanged --port 4488\n`);
     process.exit(1);
   }
   throw e;
@@ -343,8 +344,8 @@ server.on('error', (e) => {
 server.listen(config.port, config.host, () => {
   bootHubs(store);
   const link = `http://localhost:${config.port}`;
-  console.log(`\n  ◆ WhatChanged is running → ${link}\n    data folder: ${config.storage}\n    press Ctrl+C to stop\n`);
-  if (process.argv.includes('--open')) {
+  console.log(`\n  ◆ WhatChanged ${cli.version} is running → ${link}\n    data folder: ${config.storage}\n    press Ctrl+C to stop\n`);
+  if (cli.open) {
     const cmd = process.platform === 'win32' ? `start "" "${link}"` : process.platform === 'darwin' ? `open "${link}"` : `xdg-open "${link}"`;
     exec(cmd, () => {});
   }

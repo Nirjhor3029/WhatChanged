@@ -73,7 +73,7 @@ export class Storage {
       .map((c) => {
         const { secret_enc, ...pub } = c;
         const sums = this.summaries(c.id);
-        return { ...pub, snapshots: sums.length, last_snapshot: sums[0] || null };
+        return { ...pub, folders: normalizeFolders(c.folders, c.project_path), snapshots: sums.length, last_snapshot: sums[0] || null };
       })
       .sort((a, b) => String(b.last_used || '').localeCompare(String(a.last_used || '')));
   }
@@ -83,8 +83,43 @@ export class Storage {
     const c = this.connections().find((x) => x.id === id);
     if (!c) throw new Error('Connection not found');
     const { secret_enc, ...rest } = c;
-    return { ...rest, ...this.decrypt(secret_enc) };
+    return { ...rest, folders: normalizeFolders(c.folders, c.project_path), ...this.decrypt(secret_enc) };
   }
+
+  /** Replace only the project folders of a saved connection. */
+  saveFolders(id, folders) {
+    const all = this.connections();
+    const c = all.find((x) => x.id === id);
+    if (!c) throw new Error('Connection not found');
+    c.folders = normalizeFolders(folders);
+    c.project_path = c.folders[0]?.path || '';
+    this.writeJson(this.connFile(), all);
+    return c.folders;
+  }
+
+  /* ----------------------------------------------------------- workspace */
+  // Monitor settings (log files, proxies, queue sources) live next to, not inside,
+  // the connection so the database part stays untouched.
+
+  workspaceFile(id) { return path.join(this.root, 'workspaces', `${safeId(id)}.json`); }
+
+  workspace(id) {
+    const w = this.readJson(this.workspaceFile(id), {});
+    const secrets = this.decrypt(w.secret_enc);
+    return {
+      logs: w.logs || [],
+      inbound: { enabled: false, target: '', port: 0, ...(w.inbound || {}) },
+      outbound: { enabled: false, port: 0, ...(w.outbound || {}) },
+      queues: { redis_url: secrets.redis_url || '', rabbit_url: secrets.rabbit_url || '' },
+    };
+  }
+
+  saveWorkspace(id, ws) {
+    const { queues, ...rest } = ws;
+    this.writeJson(this.workspaceFile(id), { ...rest, secret_enc: this.encrypt({ redis_url: queues?.redis_url || '', rabbit_url: queues?.rabbit_url || '' }) });
+  }
+
+  deleteWorkspace(id) { fs.rmSync(this.workspaceFile(id), { force: true }); }
 
   saveConnection(input) {
     const all = this.connections();
@@ -103,7 +138,8 @@ export class Storage {
       file: input.file || '',
       ssl: !!input.ssl,
       url_display: input.url ? maskUrl(input.url) : '',
-      project_path: String(input.project_path || '').trim(),
+      folders: normalizeFolders(input.folders, input.project_path),
+      project_path: normalizeFolders(input.folders, input.project_path)[0]?.path || '',
       color: /^#[0-9a-f]{6}$/i.test(input.color || '') ? input.color : '#8b5cf6',
       created_at: idx >= 0 ? all[idx].created_at : now,
       last_used: now,
@@ -125,6 +161,7 @@ export class Storage {
     safeId(id);
     this.writeJson(this.connFile(), this.connections().filter((c) => c.id !== id));
     fs.rmSync(this.connDir(id), { recursive: true, force: true });
+    this.deleteWorkspace(id);
   }
 
   /* ------------------------------------------------------------ snapshots */
@@ -215,6 +252,18 @@ export class Storage {
       for (const f of fs.readdirSync(diffs)) if (f.includes(snap)) fs.rmSync(path.join(diffs, f), { recursive: true, force: true });
     }
   }
+}
+
+/** [{path, label}] from new-style folders or the old single project_path. */
+export function normalizeFolders(folders, legacyPath = '') {
+  let list = Array.isArray(folders) ? folders : [];
+  if (!list.length && legacyPath) list = [{ path: legacyPath }];
+  const seen = new Set();
+  return list
+    .map((f) => ({ path: String(f?.path || '').trim(), label: String(f?.label || '').trim() }))
+    .filter((f) => f.path && !seen.has(f.path.toLowerCase()) && seen.add(f.path.toLowerCase()))
+    .map((f) => ({ path: f.path, label: f.label || path.basename(f.path) || f.path }))
+    .slice(0, 20);
 }
 
 export function maskUrl(url) {

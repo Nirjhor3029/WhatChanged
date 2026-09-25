@@ -12,6 +12,12 @@ import { buildRelations } from './src/relations.js';
 import { scanCode } from './src/codescanner.js';
 import { DRIVERS, detectDriver, dropDriver, getDriver, openDriver } from './src/drivers/index.js';
 import { cut, safeId } from './src/util.js';
+import { maskUrl, normalizeFolders } from './src/storage.js';
+import { listDir } from './src/fsbrowse.js';
+import { discoverLogs } from './src/monitor/logs.js';
+import { bootHubs, dropHub, hubFor, logId } from './src/monitor/hub.js';
+import { queueTables } from './src/monitor/queues.js';
+import { codeMap } from './src/monitor/codemap.js';
 
 const store = new Storage();
 const snapper = new Snapshotter(store);
@@ -38,6 +44,7 @@ function connFromInput(b) {
     file: String(b.file || '').trim(),
     ssl: !!b.ssl,
     project_path: String(b.project_path || '').trim(),
+    folders: normalizeFolders(b.folders, b.project_path),
     color: String(b.color || ''),
   };
   if (c.mode === 'url' && !c.driver) c.driver = detectDriver(c.url) || '';
@@ -51,6 +58,12 @@ function connFromInput(b) {
     }
   }
   return c;
+}
+
+function checkFolders(folders) {
+  for (const f of folders) {
+    if (!fs.existsSync(f.path) || !fs.statSync(f.path).isDirectory()) throw new Error('Project folder not found: ' + f.path);
+  }
 }
 
 const actions = {
@@ -82,12 +95,108 @@ const actions = {
       if (c.driver !== 'sqlite' && !c.database) c.database = d.database;
       if (c.driver === 'sqlite' && c.mode === 'fields') c.database = d.database;
     } finally { await d.close(); }
-    if (c.project_path && !fs.existsSync(c.project_path)) throw new Error('Project folder not found: ' + c.project_path);
+    checkFolders(c.folders);
     if (c.id) dropDriver(c.id);
     return store.saveConnection(c);
   },
 
-  'conn.delete': async (b) => { dropDriver(b.conn); store.deleteConnection(safeId(b.conn)); return null; },
+  'conn.delete': async (b) => { dropDriver(b.conn); await dropHub(b.conn); store.deleteConnection(safeId(b.conn)); return null; },
+
+  /* ---------------------------------------------------- project & monitors */
+
+  'fs.list': async (b) => listDir(String(b.path || '')),
+
+  'ws.get': async (b, conn) => {
+    const c = conn();
+    const ws = store.workspace(c.id);
+    const hub = hubFor(store, c.id);
+    return {
+      folders: c.folders,
+      logs: ws.logs,
+      inbound: ws.inbound,
+      outbound: ws.outbound,
+      queues: { redis_url: ws.queues.redis_url ? maskUrl(ws.queues.redis_url) : '', rabbit_url: ws.queues.rabbit_url ? maskUrl(ws.queues.rabbit_url) : '' },
+      queue_tables: queueTables(store.latestComplete(c.id)).map((t) => t.name),
+      status: hub.status(),
+    };
+  },
+
+  'ws.folders': async (b, conn) => {
+    const c = conn();
+    const folders = normalizeFolders(b.folders);
+    checkFolders(folders);
+    return store.saveFolders(c.id, folders);
+  },
+
+  'logs.discover': async (b, conn) => {
+    const c = conn();
+    const watched = new Set(store.workspace(c.id).logs.map((l) => l.id));
+    return discoverLogs(c.folders, { deep: !!b.deep, system: b.system !== false }).map((f) => ({ ...f, id: logId(f.path), watched: watched.has(logId(f.path)) }));
+  },
+
+  'logs.add': async (b, conn) => {
+    const c = conn();
+    const ws = store.workspace(c.id);
+    for (const item of (b.files || []).slice(0, 30)) {
+      const p = path.resolve(String(item.path || item || '').trim().replace(/^"|"$/g, ''));
+      let st;
+      try { st = fs.statSync(p); } catch { throw new Error('File not found: ' + p); }
+      if (!st.isFile()) throw new Error('That is a folder, pick a file: ' + p);
+      const id = logId(p);
+      if (!ws.logs.some((l) => l.id === id)) ws.logs.push({ id, path: p, label: String(item.label || '').trim() || path.basename(p) });
+    }
+    if (ws.logs.length > 30) throw new Error('Up to 30 watched log files per project.');
+    store.saveWorkspace(c.id, ws);
+    hubFor(store, c.id).syncLogs();
+    return ws.logs;
+  },
+
+  'logs.remove': async (b, conn) => {
+    const c = conn();
+    const ws = store.workspace(c.id);
+    ws.logs = ws.logs.filter((l) => l.id !== b.id);
+    store.saveWorkspace(c.id, ws);
+    hubFor(store, c.id).syncLogs();
+    return ws.logs;
+  },
+
+  'req.config': async (b, conn) => {
+    const c = conn();
+    const ws = store.workspace(c.id);
+    if (b.inbound) {
+      ws.inbound = { enabled: !!b.inbound.enabled, target: String(b.inbound.target || '').trim(), port: Number(b.inbound.port) || ws.inbound.port || 4480 };
+      if (ws.inbound.enabled && !ws.inbound.target) throw new Error('Enter the address your app runs on, e.g. http://myapp.test or http://localhost:3000');
+    }
+    if (b.outbound) ws.outbound = { enabled: !!b.outbound.enabled, port: Number(b.outbound.port) || ws.outbound.port || 4481 };
+    store.saveWorkspace(c.id, ws);
+    return hubFor(store, c.id).applyProxies();
+  },
+
+  'req.clear': async (b, conn) => { hubFor(store, conn().id).clearRequests(); return null; },
+
+  'queues.config': async (b, conn) => {
+    const c = conn();
+    const ws = store.workspace(c.id);
+    for (const k of ['redis_url', 'rabbit_url']) {
+      if (b[k] === undefined) continue;
+      const v = String(b[k] || '').trim();
+      if (!v.includes('•••')) ws.queues[k] = v;
+    }
+    if (ws.queues.redis_url && !/^rediss?:\/\//.test(ws.queues.redis_url)) throw new Error('Redis URL looks like redis://[:password@]host:6379[/db]');
+    if (ws.queues.rabbit_url && !/^https?:\/\//.test(ws.queues.rabbit_url)) throw new Error('RabbitMQ needs the management URL, e.g. http://guest:guest@localhost:15672');
+    store.saveWorkspace(c.id, ws);
+    const hub = hubFor(store, c.id);
+    hub.resetQueues();
+    await hub.pollQueues();
+    return { queues: hub.queues, errors: hub.queueErrors };
+  },
+
+  'code.map': async (b, conn) => {
+    const c = conn();
+    if (!c.folders.length) return null;
+    const kinds = (b.kinds || ['http', 'webhook', 'produce', 'consume']).filter((k) => ['http', 'webhook', 'produce', 'consume'].includes(k));
+    return codeMap(c.folders, kinds);
+  },
 
   'snap.begin': async (b, conn) => snapper.begin(conn(), cut(String(b.label || '').trim(), 80)),
   'snap.capture': async (b, conn) => snapper.capture(conn(), safeId(b.snap), (b.tables || []).filter((x) => typeof x === 'string')),
@@ -153,8 +262,8 @@ const actions = {
 
   'code': async (b, conn) => {
     const c = conn();
-    if (!c.project_path) return null;
-    return scanCode(c.project_path, (b.tables || []).filter((x) => typeof x === 'string').slice(0, 60));
+    if (!c.folders.length) return null;
+    return scanCode(c.folders, (b.tables || []).filter((x) => typeof x === 'string').slice(0, 60));
   },
 };
 
@@ -178,6 +287,16 @@ function hostAllowed(req) {
 const server = http.createServer(async (req, res) => {
   if (!hostAllowed(req)) return send(res, 403, 'Forbidden host', 'text/plain');
   const url = new URL(req.url, 'http://localhost');
+
+  // Live monitor stream (Server-Sent Events). EventSource can't send headers, so the token is in the query.
+  if (url.pathname === '/api/stream') {
+    if (url.searchParams.get('token') !== TOKEN) return send(res, 403, 'Session expired', 'text/plain');
+    let c;
+    try { c = store.connection(safeId(url.searchParams.get('conn') || '')); } catch { return send(res, 404, 'Unknown project', 'text/plain'); }
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+    hubFor(store, c.id).subscribe(res);
+    return;
+  }
 
   if (url.pathname.startsWith('/api/')) {
     if (req.method !== 'POST') return send(res, 405, JSON.stringify({ ok: false, error: 'POST only' }));
@@ -222,6 +341,7 @@ server.on('error', (e) => {
 });
 
 server.listen(config.port, config.host, () => {
+  bootHubs(store);
   const link = `http://localhost:${config.port}`;
   console.log(`\n  ◆ DB Checker is running → ${link}\n    data folder: ${config.storage}\n    press Ctrl+C to stop\n`);
   if (process.argv.includes('--open')) {

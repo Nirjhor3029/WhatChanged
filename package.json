@@ -16,6 +16,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "ioredis": "^6.0.0",
     "mongodb": "^7.6.0",
     "mssql": "^12.7.2",
     "mysql2": "^3.24.4",

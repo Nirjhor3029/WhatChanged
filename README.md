@@ -29,6 +29,53 @@ Requirements: Node.js 22.13 or newer (SQLite support uses the built-in `node:sql
    - model, controller, service and repository lines that use the table, with likely writes listed first
 5. After each capture, the new snapshot becomes the baseline, so you can check a multi-step journey one step at a time. In **History** you can compare any two snapshots.
 
+## Project folders
+
+A project can have several folders — e.g. a MERN app's `backend` and `frontend`, or one folder per
+microservice. Add them when you create the connection or later with the **Project** button. They are
+used for code hints in reports, log discovery and the API / queue code maps. Any language works.
+
+## Logs
+
+- **Find log files** searches your project folders (`*.log`, `logs/`, `storage/logs`, `var/log`,
+  `nohup.out`, …) and common system places (PM2, Apache, Nginx, PHP, MySQL, Laragon/XAMPP). With
+  *look inside files* it also recognises logs with unusual names by their content. You tick which
+  files to watch, or pick any file yourself.
+- Up to 5 files live side by side. Levels are detected for most formats (Monolog/Laravel,
+  Symfony, Rails, Django/Python, winston/pino JSON, Log4j/Spring, Go, Apache/Nginx, PHP errors).
+  Stack traces stay attached to their error line.
+- Per pane: filter by text or `/regex/`, level toggles (Alt+click shows one level only), wrap, pause,
+  click / Shift+click lines to select, copy one entry, the selection, or everything that matches.
+
+## Requests
+
+- **Incoming:** turn it on, enter where your app runs (`http://myapp.test`, `http://localhost:3000`)
+  and open the app through `http://localhost:4480`. Every page, API call, form post and webhook is
+  recorded with headers and bodies. Links, redirects and cookies are rewritten so you stay on the proxy.
+- **Outgoing:** turn it on and start your app or worker with `HTTP_PROXY` / `HTTPS_PROXY` set to
+  `http://127.0.0.1:4481`. The page has ready-to-copy setup for PHP/Laravel, Node, Python, Java, Go,
+  .NET and Ruby. Plain HTTP calls are recorded in full. HTTPS calls show the host, timing and size,
+  because their content stays encrypted.
+- Requests from watched access logs (Apache, Nginx, morgan, Django, Rails) appear here too, as do
+  HTTP errors written to logs (Guzzle, cURL, axios/Node, Python requests).
+- The code map lists where the code calls APIs and where it receives webhooks.
+
+## Queues & listeners
+
+- Database job tables are detected automatically: Laravel `jobs`/`failed_jobs`, Rails
+  `delayed_jobs`/GoodJob/Solid Queue, Oban, River, Que, Django-Q, Celery results, Symfony
+  Messenger, Agenda (MongoDB), outbox tables.
+- **Redis** (optional URL): BullMQ/Bull, Sidekiq, Laravel, RQ, Celery, Asynq and generic list, set
+  and stream queues.
+- **RabbitMQ** (optional management URL): ready, unacked and consumer counts for each queue.
+- **Job activity** merges new job rows, count changes and worker log lines (Laravel `queue:work`,
+  ActiveJob, Celery, Sidekiq, RQ) into one feed.
+- The code map lists producers (dispatch, publish, enqueue, emit) and workers or listeners.
+
+All monitors run inside the DB Checker process and keep recent events in memory only: 3,000 lines per
+log, 400 requests and 1,000 job events. Proxies and log watchers start again on their own when
+DB Checker restarts.
+
 ## Storage
 
 Everything is saved as JSON under `storage/`:
@@ -39,6 +86,7 @@ Everything is saved as JSON under `storage/`:
 | `snapshots/<conn>/<snap>/meta.json` | schema, counts and fingerprints |
 | `snapshots/<conn>/<snap>/rows/*.json.gz` | captured rows (gzip). A table that did not change reuses the previous file instead of saving a copy |
 | `snapshots/<conn>/diffs/*.json` | cached reports |
+| `workspaces/<conn>.json` | watched log files, proxy settings, queue sources (Redis/RabbitMQ URLs encrypted) |
 
 ## Limits and tuning
 

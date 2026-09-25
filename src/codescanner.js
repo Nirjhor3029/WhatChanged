@@ -11,10 +11,26 @@ import { cut } from './util.js';
  */
 const WRITE_RE = /(::|->|\.)\s*(create|createMany|insert|insertOne|insertMany|insertGetId|insertOrIgnore|update|updateOne|updateMany|updateOrCreate|updateOrInsert|findOneAndUpdate|findByIdAndUpdate|findOneAndDelete|findByIdAndDelete|firstOrCreate|upsert|save|saveMany|delete|deleteOne|deleteMany|destroy|forceDelete|remove|increment|decrement|attach|detach|sync|syncWithoutDetaching|toggle|restore|push|truncate|bulkWrite|bulkCreate|replaceOne)\s*\(|\b(INSERT\s+INTO|UPDATE\s+\S+\s+SET|DELETE\s+FROM)\b/i;
 
-export function scanCode(root, tables, perTable = 14) {
-  root = path.resolve(String(root || ''));
-  if (!root || !fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new Error('Project folder not found: ' + root);
-  const files = listFiles(root);
+/** All code files of all project folders: [{ file, rel }] (rel is prefixed with the folder label when there are several). */
+export function projectFiles(folders) {
+  const roots = folders.map((f) => ({ ...f, path: path.resolve(String(f.path || '')) }))
+    .filter((f) => fs.existsSync(f.path) && fs.statSync(f.path).isDirectory());
+  if (!roots.length) throw new Error('None of the project folders exist any more — check them in Project settings.');
+  const out = [];
+  for (const r of roots) {
+    for (const file of listFiles(r.path)) {
+      const rel = path.relative(r.path, file).replace(/\\/g, '/');
+      out.push({ file, rel: roots.length > 1 ? `${r.label}/${rel}` : rel });
+    }
+  }
+  return out;
+}
+
+export function scanCode(folders, tables, perTable = 14) {
+  const all = projectFiles(folders);
+  const files = all.map((f) => f.file);
+  const relOf = new Map(all.map((f) => [f.file, f.rel]));
+  const root = folders.map((f) => f.path).join(', ');
 
   const targets = tables.map((t) => {
     const bare = t.split('.').pop();
@@ -35,7 +51,7 @@ export function scanCode(root, tables, perTable = 14) {
   for (const file of files) {
     let src;
     try { src = fs.readFileSync(file, 'utf8'); } catch { continue; }
-    const relPath = path.relative(root, file).replace(/\\/g, '/');
+    const relPath = relOf.get(file);
     const layer = layerOf(relPath);
     let lines = null;
     for (const tg of targets) {
@@ -63,7 +79,7 @@ export function scanCode(root, tables, perTable = 14) {
   return { root, files_scanned: files.length, tables: out };
 }
 
-function listFiles(root) {
+export function listFiles(root) {
   const skip = new Set(config.codeSkipDirs.map((d) => d.toLowerCase()));
   const exts = new Set(config.codeExtensions);
   const out = [];
@@ -85,7 +101,7 @@ function listFiles(root) {
   return out;
 }
 
-function layerOf(rel) {
+export function layerOf(rel) {
   const r = rel.toLowerCase();
   const map = [
     ['migration', /migrations?\//], ['seeder', /seed(er)?s?\//], ['factory', /factor(y|ies)\//], ['test', /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.\w+$/],

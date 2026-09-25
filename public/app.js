@@ -38,6 +38,8 @@
     set(k, v) { try { localStorage.setItem('dbc:' + k, JSON.stringify(v)); } catch { /* private mode */ } },
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // Shared with monitor.js (Logs / Requests / Queues pages); filled in at the end of this file.
+  const DBC = (window.DBC = { views: {}, hooks: {} });
 
   async function api(action, body = {}) {
     let res;
@@ -98,6 +100,14 @@
     eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
     folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
     logout: '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/>',
+    layers: '<path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/>',
+    pause: '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>',
+    play: '<path d="m6 4 14 8-14 8z"/>',
+    down: '<path d="M12 5v14M6 13l6 6 6-6"/>',
+    wrap: '<path d="M3 6h18M3 12h15a3 3 0 0 1 0 6h-4"/><path d="m16 16-2 2 2 2"/><path d="M3 18h7"/>',
+    eraser: '<path d="m7 21-4-4 12-12 6 6-9 10z"/><path d="M22 21H7"/>',
+    in: '<path d="M12 3v12M6 9l6 6 6-6"/><path d="M4 21h16"/>',
+    out: '<path d="M12 21V9M6 15l6-6 6 6"/><path d="M4 3h16"/>',
   };
   const ic = (n, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[n]}</svg>`;
   const LOGO = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13h4l2.5-6 4 12 2.5-5H21"/></svg>';
@@ -140,9 +150,11 @@
         if (!ok) return;
         if (parts[2] === 'report' && parts[3] && parts[4]) return viewReport(parts[3], parts[4]);
         if (parts[2] === 'history') return viewHistory();
+        if (DBC.views[parts[2]]) { S.view = parts[2]; return DBC.views[parts[2]](parts.slice(3)); }
         return viewOverview();
       }
       stopWatch();
+      if (S.conn) DBC.hooks.connClosed?.();
       S.conn = null;
       return viewHome();
     } catch (e) {
@@ -153,6 +165,7 @@
   async function ensureConn(id) {
     if (S.conn?.id === id && S.meta) return true;
     stopWatch();
+    if (S.conn) DBC.hooks.connClosed?.();
     shell(`<div class="loading-page"><span class="spinner"></span>Opening connection…</div>`);
     S.conns = await api('conn.list');
     S.conn = S.conns.find((c) => c.id === id);
@@ -169,6 +182,7 @@
     S.meta = await api('snap.meta', { conn: id, snap: complete[0].id });
     S.watch.changes = [];
     if (ls.get('watch:' + id, true)) startWatch();
+    DBC.hooks.connOpened?.(S.conn);
     return true;
   }
 
@@ -201,12 +215,19 @@
             <a class="tab ${active === 'overview' ? 'on' : ''}" href="#/c/${c.id}">${ic('grid')}Overview${changes ? `<span class="n" id="tabBadge">${changes}</span>` : '<span id="tabBadge"></span>'}</a>
             <a class="tab ${active === 'report' ? 'on' : ''}" href="${S.lastReport ? `#/c/${c.id}/report/${S.lastReport[0]}/${S.lastReport[1]}` : `#/c/${c.id}/history`}">${ic('report')}Report</a>
             <a class="tab ${active === 'history' ? 'on' : ''}" href="#/c/${c.id}/history">${ic('history')}History</a>
-          </nav>` : ''}
+            <span class="tab-sep"></span>
+            <a class="tab ${active === 'logs' ? 'on' : ''}" href="#/c/${c.id}/logs">${ic('rows')}Logs<span id="badge-logs"></span></a>
+            <a class="tab ${active === 'requests' ? 'on' : ''}" href="#/c/${c.id}/requests">${ic('share')}Requests<span id="badge-requests"></span></a>
+            <a class="tab ${active === 'queues' ? 'on' : ''}" href="#/c/${c.id}/queues">${ic('layers')}Queues<span id="badge-queues"></span></a>
+          </nav>
+          <button class="btn ghost sm" id="projectBtn" title="Project folders">${ic('folder')}<span>Project</span></button>` : ''}
         <span class="spacer"></span>
         ${c ? `<a class="btn ghost sm" href="#/" title="All connections">${ic('logout')}<span>Switch</span></a>` : ''}
         <button class="btn ghost icon" id="themeBtn" title="Toggle theme">${ic(theme === 'dark' ? 'sun' : 'moon')}</button>
       </header>
       <main class="page">${content}</main>`;
+    if ($('#projectBtn')) $('#projectBtn').onclick = () => DBC.openProject?.();
+    DBC.hooks.shellRendered?.();
     $('#themeBtn').onclick = () => {
       const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
       document.documentElement.dataset.theme = t;
@@ -221,7 +242,7 @@
 
   function newForm(driver = 'mysql') {
     const d = drvOf(driver);
-    return { id: '', name: '', driver, mode: driver === 'mongodb' ? 'url' : 'fields', url: '', host: driver === 'sqlite' ? '' : '127.0.0.1', port: d.port, user: d.user, password: '', database: '', file: '', ssl: false, project_path: '', color: COLORS[Math.floor(Math.random() * COLORS.length)], dbs: [] };
+    return { id: '', name: '', driver, mode: driver === 'mongodb' ? 'url' : 'fields', url: '', host: driver === 'sqlite' ? '' : '127.0.0.1', port: d.port, user: d.user, password: '', database: '', file: '', ssl: false, project_path: '', folders: [], color: COLORS[Math.floor(Math.random() * COLORS.length)], dbs: [] };
   }
 
   async function viewHome() {
@@ -312,7 +333,7 @@
       if (ed) {
         e.stopPropagation();
         const c = S.conns.find((x) => x.id === ed.dataset.edit);
-        F = { ...newForm(c.driver), ...c, password: '', url: c.url_display || '', dbs: [] };
+        F = { ...newForm(c.driver), ...c, password: '', url: c.url_display || '', dbs: [], project_path: '', folders: (c.folders || []).map((x) => ({ ...x })) };
         renderForm();
         $('#connForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
       } else if (del) {
@@ -367,8 +388,8 @@
             <label class="field c3"><span>Password</span><input class="input mono" type="password" name="password" value="${esc(f.password)}" placeholder="${editing ? 'unchanged' : ''}" autocomplete="new-password"></label>
             ${dbField}
             <label class="check c6"><input type="checkbox" name="ssl" ${f.ssl ? 'checked' : ''}> Use SSL/TLS (needed for most cloud servers)</label>`}
-          <label class="field c6"><span>Project folder <small>(optional — enables “where in code?” hints)</small></span>
-            <input class="input mono" name="project_path" value="${esc(f.project_path)}" placeholder="D:\\laragon\\www\\my-app"></label>
+          <div class="field c6"><span>Project folders <small>(optional — backend, frontend, services… used for code hints, log discovery and API/queue maps)</small></span>
+            ${folderRows(f.folders)}</div>
         </div>
         <div id="formMsg">${msg ? `<div class="form-msg ${msg.type}">${msg.text}</div>` : ''}</div>
         <div class="row">
@@ -381,6 +402,7 @@
     const form = $('#connForm');
     form.oninput = (e) => {
       const el = e.target;
+      if (folderInput(F.folders, el)) return;
       if (!el.name) return;
       F[el.name] = el.type === 'checkbox' ? el.checked : el.value;
       if (el.name === 'url') {
@@ -392,10 +414,11 @@
       const b = e.target.closest('button');
       if (!b) return;
       if (b.dataset.driver) {
-        const keep = { name: F.name, color: F.color, project_path: F.project_path, id: F.id };
+        const keep = { name: F.name, color: F.color, folders: F.folders, id: F.id };
         F = { ...newForm(b.dataset.driver), ...keep };
         return renderForm();
       }
+      if (await folderClick(F.folders, b)) return renderForm();
       if (b.dataset.mode) { F.mode = b.dataset.mode; return renderForm(); }
       if (b.dataset.color) { F.color = b.dataset.color; return renderForm(); }
       if (b.dataset.act === 'reset') { F = newForm(); return renderForm(); }
@@ -434,6 +457,101 @@
   }
   const payload = () => ({ ...F, dbs: undefined });
   const setMsg = (type, text) => { const m = $('#formMsg'); if (m) m.innerHTML = `<div class="form-msg ${type}">${text}</div>`; };
+
+  /* ================================================================ project folders */
+  // Editable list of folders ({path, label}); used by the connection form and Project settings.
+  function folderRows(folders) {
+    return `<div class="folder-list">
+      ${folders.map((f, i) => `<div class="folder-row">
+        <span class="folder-ico">${ic('folder')}</span>
+        <input class="input mono" data-folder="${i}" value="${esc(f.path)}" placeholder="D:\\projects\\my-app\\backend" spellcheck="false">
+        <input class="input folder-label" data-flabel="${i}" value="${esc(f.label || '')}" placeholder="label (api, web…)">
+        <button type="button" class="btn sm" data-browse="${i}">${ic('search')}Browse</button>
+        <button type="button" class="btn sm icon ghost danger" data-rmfolder="${i}" title="Remove">${ic('x')}</button>
+      </div>`).join('')}
+      <button type="button" class="btn sm" data-addfolder>${ic('plus')}Add folder</button>
+      ${folders.length ? '' : '<span class="hint">e.g. a MERN app: add the <code>backend</code> and <code>frontend</code> folders; microservices: one folder each.</span>'}
+    </div>`;
+  }
+  function folderInput(folders, el) {
+    if (el.dataset.folder !== undefined) { folders[+el.dataset.folder].path = el.value; return true; }
+    if (el.dataset.flabel !== undefined) { folders[+el.dataset.flabel].label = el.value; return true; }
+    return false;
+  }
+  /** Handles add / browse / remove buttons; true when something changed. */
+  async function folderClick(folders, b) {
+    if (b.dataset.addfolder !== undefined) {
+      const p = await pickPath({ mode: 'dir', start: folders[folders.length - 1]?.path || '' });
+      if (p) folders.push({ path: p, label: baseName(p) });
+      return !!p;
+    }
+    if (b.dataset.browse !== undefined) {
+      const f = folders[+b.dataset.browse];
+      const p = await pickPath({ mode: 'dir', start: f.path });
+      if (p) { f.path = p; if (!f.label) f.label = baseName(p); }
+      return !!p;
+    }
+    if (b.dataset.rmfolder !== undefined) { folders.splice(+b.dataset.rmfolder, 1); return true; }
+    return false;
+  }
+  const baseName = (p) => String(p).replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+
+  /**
+   * In-app file/folder picker (the browser cannot hand us real paths).
+   * mode 'dir' → resolves a folder; mode 'file' → resolves a file path.
+   */
+  function pickPath({ mode = 'dir', start = '', title } = {}) {
+    return new Promise((resolve) => {
+      const m = modal(`<div class="picker">
+        <div class="row"><h3 style="margin:0">${esc(title || (mode === 'dir' ? 'Choose a folder' : 'Choose a file'))}</h3><span class="spacer"></span><button class="btn sm icon ghost" data-r="x">${ic('x')}</button></div>
+        <div class="row picker-bar"><button class="btn sm icon" data-up title="Up">↑</button><input class="input mono" id="pkPath" spellcheck="false" placeholder="Type a path and press Enter"></div>
+        <div class="picker-body"><div class="picker-places" id="pkPlaces"></div><div class="picker-list" id="pkList"></div></div>
+        <div class="row"><span class="muted" id="pkSel" style="font-size:12.5px"></span><span class="spacer"></span>
+          <button class="btn ghost" data-r="x">Cancel</button>
+          ${mode === 'dir' ? `<button class="btn primary" data-r="ok">${ic('check')}Use this folder</button>` : `<button class="btn primary" data-r="ok" disabled>${ic('check')}Use this file</button>`}</div></div>`);
+      m.querySelector('.modal').classList.add('wide');
+      let cur = '';
+      let parent = null;
+      let selected = '';
+      const done = (v) => { m.remove(); resolve(v); };
+      const load = async (p) => {
+        try {
+          const r = await api('fs.list', { path: p });
+          cur = r.path;
+          parent = r.parent;
+          $('#pkPath', m).value = r.path;
+          $('#pkPlaces', m).innerHTML = r.places.map((x) => `<button class="picker-place" data-go="${esc(x.path)}">${ic('folder')}${esc(x.name)}</button>`).join('');
+          const items = r.entries.filter((e) => mode === 'file' || e.dir);
+          $('#pkList', m).innerHTML = items.length ? items.map((e) => `<button class="picker-item ${e.dir ? 'dir' : 'file'}" data-${e.dir ? 'go' : 'file'}="${esc(e.path)}">
+              ${ic(e.dir ? 'folder' : 'rows')}<span class="nm">${esc(e.name)}</span>${e.dir ? '' : `<span class="muted">${bytes(e.size)} · ${ago(e.mtime)}</span>`}</button>`).join('')
+            : `<div class="empty" style="padding:20px">${mode === 'dir' ? 'No sub-folders' : 'Empty folder'}</div>`;
+          if (mode === 'dir') $('#pkSel', m).textContent = cur ? 'Selected: ' + cur : 'Pick a drive';
+        } catch (e) { toast(esc(e.message), 'err'); }
+      };
+      m.onclick = (e) => {
+        const b = e.target.closest('button');
+        if (e.target === m) return done(null);
+        if (!b) return;
+        if (b.dataset.r === 'x') return done(null);
+        if (b.dataset.r === 'ok') return done(mode === 'dir' ? cur || null : selected || null);
+        if (b.dataset.up !== undefined) return parent !== null && load(parent);
+        if (b.dataset.go) return load(b.dataset.go);
+        if (b.dataset.file) {
+          selected = b.dataset.file;
+          $$('.picker-item.sel', m).forEach((x) => x.classList.remove('sel'));
+          b.classList.add('sel');
+          $('#pkSel', m).textContent = 'Selected: ' + selected;
+          m.querySelector('[data-r="ok"]').disabled = false;
+          if (e.detail === 2) done(selected);
+        }
+      };
+      m.onkeydown = (e) => {
+        if (e.key === 'Escape') done(null);
+        if (e.key === 'Enter' && e.target.id === 'pkPath') { e.preventDefault(); load(e.target.value.trim()); }
+      };
+      load(start);
+    });
+  }
 
   async function withBusy(btn, fn) {
     const html = btn.innerHTML;
@@ -1371,8 +1489,8 @@
 
   async function loadCodeHints(d) {
     const secs = $$('.code-sec');
-    if (!S.conn.project_path) {
-      if (secs[0]) secs[0].innerHTML = `<div class="note">${ic('code')}<span>Tip: add your <b>project folder</b> to this connection (Switch → edit) and DB Checker will point to the models, controllers and services that touch each ${V().table}.</span></div>`;
+    if (!(S.conn.folders || []).length) {
+      if (secs[0]) secs[0].innerHTML = `<div class="note">${ic('code')}<span>Tip: add your <b>project folders</b> (the <b>Project</b> button at the top) and DB Checker will point to the models, controllers and services that touch each ${V().table}.</span></div>`;
       return;
     }
     secs.forEach((s) => { s.innerHTML = `<div class="sec-h">Where in code?<span class="line"></span></div><div class="skeleton" style="height:60px"></div>`; });
@@ -1615,4 +1733,9 @@
 
   document.addEventListener('visibilitychange', () => { if (!document.hidden && S.watch.on) tick(); });
   setInterval(() => { if (S.view === 'overview' && S.watch.on) { const st = $('#watchStatus'); if (st && !S.watch.changes.length) st.innerHTML = watchStatusHtml(); } }, 5000);
+
+  Object.assign(DBC, {
+    S, TOKEN, $, $$, esc, fmt, plural, bytes, ago, clock, ls, api, toast, ic, V, short,
+    shell, modal, confirmBox, promptBox, pagedBox, closeDrawer, withBusy, pickPath, folderRows, folderInput, folderClick,
+  });
 })();

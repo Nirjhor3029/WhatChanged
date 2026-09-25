@@ -23,7 +23,7 @@ export class PostgresDriver {
       if (opts.connectionString) opts.connectionString = opts.connectionString.replace(/([?&])sslmode=[^&]*&?/i, '$1').replace(/[?&]$/, '');
     }
     opts.connectionTimeoutMillis = 10000;
-    opts.application_name = 'db-checker';
+    opts.application_name = 'whatchanged';
     const d = new PostgresDriver();
     d.client = new pg.Client(opts);
     try {

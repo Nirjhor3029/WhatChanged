@@ -17,7 +17,7 @@ export class MongoDriver {
       uri = `mongodb://${auth}${cfg.host || '127.0.0.1'}:${Number(cfg.port) || 27017}/?authSource=admin${cfg.ssl ? '&tls=true' : ''}`;
     }
     const d = new MongoDriver();
-    d.client = new MongoClient(uri, { serverSelectionTimeoutMS: 12000, connectTimeoutMS: 12000, appName: 'db-checker' });
+    d.client = new MongoClient(uri, { serverSelectionTimeoutMS: 12000, connectTimeoutMS: 12000, appName: 'whatchanged' });
     try {
       await d.client.connect();
     } catch (e) {

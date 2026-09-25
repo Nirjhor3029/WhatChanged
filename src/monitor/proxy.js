@@ -162,7 +162,7 @@ export class InboundProxy {
     up.on('error', (e) => {
       if (!res.headersSent) {
         res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
-        res.end(`DB Checker proxy could not reach ${t.origin}\n\n${e.message}\n\nIs your app running? Check the target URL on the Requests page.`);
+        res.end(`WhatChanged proxy could not reach ${t.origin}\n\n${e.message}\n\nIs your app running? Check the target URL on the Requests page.`);
       } else res.destroy();
       this.emit({ ...ev, pending: false, status: 502, ms: Date.now() - started, error: `Cannot reach ${t.origin}: ${e.message}`, reqBody: reqCap.text(ev.contentType) });
     });
@@ -231,7 +231,7 @@ export class OutboundProxy {
     let u;
     try { u = new URL(req.url); } catch {
       res.writeHead(400, { 'content-type': 'text/plain' });
-      return res.end('This is DB Checker\'s outbound proxy. Set it as HTTP_PROXY for your app; do not open it in a browser.');
+      return res.end('This is WhatChanged\'s outbound proxy. Set it as HTTP_PROXY for your app; do not open it in a browser.');
     }
     const started = Date.now();
     const reqHeaders = headersOf(req.rawHeaders);
@@ -278,7 +278,7 @@ export class OutboundProxy {
     let down = 0;
     let done = false;
     const upstream = net.connect(port, host, () => {
-      socket.write('HTTP/1.1 200 Connection Established\r\nProxy-agent: db-checker\r\n\r\n');
+      socket.write('HTTP/1.1 200 Connection Established\r\nProxy-agent: whatchanged\r\n\r\n');
       if (head?.length) { upstream.write(head); up += head.length; }
       upstream.pipe(socket);
       socket.pipe(upstream);

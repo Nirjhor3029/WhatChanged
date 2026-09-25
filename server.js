@@ -343,7 +343,7 @@ server.on('error', (e) => {
 server.listen(config.port, config.host, () => {
   bootHubs(store);
   const link = `http://localhost:${config.port}`;
-  console.log(`\n  ◆ DB Checker is running → ${link}\n    data folder: ${config.storage}\n    press Ctrl+C to stop\n`);
+  console.log(`\n  ◆ WhatChanged is running → ${link}\n    data folder: ${config.storage}\n    press Ctrl+C to stop\n`);
   if (process.argv.includes('--open')) {
     const cmd = process.platform === 'win32' ? `start "" "${link}"` : process.platform === 'darwin' ? `open "${link}"` : `xdg-open "${link}"`;
     exec(cmd, () => {});

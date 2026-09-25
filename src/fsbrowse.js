@@ -49,7 +49,7 @@ function places() {
     const full = path.join(home, p);
     if (fs.existsSync(full)) list.push({ name: p, path: full });
   }
-  // The folder DB Checker runs from usually sits next to other projects (e.g. laragon/www).
+  // The folder WhatChanged runs from usually sits next to other projects (e.g. laragon/www).
   const sibling = path.resolve(process.cwd(), '..');
   if (fs.existsSync(sibling)) list.push({ name: path.basename(sibling) + ' (projects)', path: sibling });
   return list;

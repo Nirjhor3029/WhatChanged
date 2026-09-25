@@ -1,4 +1,4 @@
-/* DB Checker — single page UI (no framework). */
+/* WhatChanged — single page UI (no framework). */
 (() => {
   'use strict';
 
@@ -50,7 +50,7 @@
         body: JSON.stringify(body),
       });
     } catch {
-      throw new Error('DB Checker server is not reachable — is `npm start` still running?');
+      throw new Error('WhatChanged server is not reachable — is `npm start` still running?');
     }
     let j;
     try { j = await res.json(); } catch { throw new Error(`Server returned an invalid response (${res.status})`); }
@@ -205,7 +205,7 @@
     const changes = S.watch.changes.length;
     $('#app').innerHTML = `
       <header class="topbar">
-        <a class="brand" href="#/"><span class="brand-mark">${LOGO}</span>DB Checker</a>
+        <a class="brand" href="#/"><span class="brand-mark">${LOGO}</span>WhatChanged</a>
         ${c ? `
           <div class="conn-pill" title="${esc(c.name)}">
             <span class="ico" style="background:${esc(c.color)}22;color:${esc(c.color)}">${ic('db')}</span>
@@ -251,9 +251,9 @@
     shell(`
       <section class="hero">
         <div>
-          <span class="eyebrow">Database change detective</span>
-          <h1>See exactly what your code <span class="grad-text">does to the database.</span></h1>
-          <p>Connect any database, take a snapshot, then click through your app. DB Checker shows every ${'row'} that was inserted, updated or deleted — table by table, column by column — plus which related tables and code files are involved.</p>
+          <span class="eyebrow">See the side effects of every action</span>
+          <h1>Click something in your app. <span class="grad-text">See what changed.</span></h1>
+          <p>Connect your database and project folders, then use your app as usual. WhatChanged shows every row inserted, updated or deleted — cell by cell — plus the logs written, the API calls made and the jobs queued, with the code that did it.</p>
           <div class="steps">
             <span class="step"><b>1</b>Connect</span><span class="step"><b>2</b>Snapshot</span>
             <span class="step"><b>3</b>Use your app</span><span class="step"><b>4</b>See the diff</span>
@@ -339,7 +339,7 @@
       } else if (del) {
         e.stopPropagation();
         const c = S.conns.find((x) => x.id === del.dataset.del);
-        if (!(await confirmBox(`Delete “${esc(c.name)}”?`, 'The saved connection and all its snapshots will be removed from DB Checker. Your database is not touched.', 'Delete'))) return;
+        if (!(await confirmBox(`Delete “${esc(c.name)}”?`, 'The saved connection and all its snapshots will be removed from WhatChanged. Your database is not touched.', 'Delete'))) return;
         await api('conn.delete', { conn: c.id });
         S.conns = S.conns.filter((x) => x.id !== c.id);
         renderConnList();
@@ -1490,7 +1490,7 @@
   async function loadCodeHints(d) {
     const secs = $$('.code-sec');
     if (!(S.conn.folders || []).length) {
-      if (secs[0]) secs[0].innerHTML = `<div class="note">${ic('code')}<span>Tip: add your <b>project folders</b> (the <b>Project</b> button at the top) and DB Checker will point to the models, controllers and services that touch each ${V().table}.</span></div>`;
+      if (secs[0]) secs[0].innerHTML = `<div class="note">${ic('code')}<span>Tip: add your <b>project folders</b> (the <b>Project</b> button at the top) and WhatChanged will point to the models, controllers and services that touch each ${V().table}.</span></div>`;
       return;
     }
     secs.forEach((s) => { s.innerHTML = `<div class="sec-h">Where in code?<span class="line"></span></div><div class="skeleton" style="height:60px"></div>`; });
@@ -1569,7 +1569,7 @@
         n.vx += (W / 2 - n.x) * 0.0015; n.vy += (H / 2 - n.y) * 0.003;
         n.x += n.vx * 0.5; n.y += n.vy * 0.5; n.vx *= 0.6; n.vy *= 0.6;
         const r = radius(n);
-        n.x = Math.max(60, Math.min(W - 60, n.x)); n.y = Math.max(r + 12, Math.min(H - r - 48, n.y));
+        n.x = Math.max(60, Math.min(W - 60, n.x)); n.y = Math.max(r + 12, Math.min(H - r - 64, n.y)); // leave room for labels + legend
       }
     }
     const t = (s, m) => (s.length > m ? s.slice(0, m - 1) + '…' : s);

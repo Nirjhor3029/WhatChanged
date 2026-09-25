@@ -1,4 +1,4 @@
-/* DB Checker — Logs, Requests and Queues pages (live, via Server-Sent Events). */
+/* WhatChanged — Logs, Requests and Queues pages (live, via Server-Sent Events). */
 (() => {
   'use strict';
 
@@ -169,7 +169,7 @@
   }
 
   function needFolders(what) {
-    return `<div class="note">${ic('folder')}<span>Add your project folders first (<a href="javascript:void 0" data-project>Project</a>) — then DB Checker can ${what}.</span></div>`;
+    return `<div class="note">${ic('folder')}<span>Add your project folders first (<a href="javascript:void 0" data-project>Project</a>) — then WhatChanged can ${what}.</span></div>`;
   }
   document.addEventListener('click', (e) => { if (e.target.closest('[data-project]')) { e.preventDefault(); openProject(); } });
 
@@ -245,7 +245,7 @@
         </span>`).join('')}<span class="muted" style="font-size:12px">click to show / hide · max ${MAX_PANES} open</span></div>` : ''}
       ${!logs.length ? `<div class="card empty-state">
           <div class="big">📜</div><h2>No log files yet</h2>
-          <p class="muted">Let DB Checker look through your project folders (and common places like PM2, Apache, Nginx, PHP, MySQL) for log files,<br>or pick a file yourself.</p>
+          <p class="muted">Let WhatChanged look through your project folders (and common places like PM2, Apache, Nginx, PHP, MySQL) for log files,<br>or pick a file yourself.</p>
           <div class="row" style="justify-content:center"><button class="btn primary lg" data-find>${ic('search')}Find log files</button><button class="btn lg" data-addfile>${ic('plus')}Pick a file</button></div>
           ${(S.conn.folders || []).length ? '' : needFolders('search your code folders for logs')}
         </div>` : !ids.length ? `<div class="note">${ic('info')}<span>Click a file above to open it.</span></div>` : ''}
@@ -642,7 +642,7 @@
       ib.innerHTML = s.error ? `<div class="form-msg err">${ic('alert')}<span>${esc(s.error)}</span></div>`
         : s.running ? `<div class="form-msg ok">${ic('check')}<span>Open your app at <a href="http://localhost:${s.port}" target="_blank" rel="noopener"><b>http://localhost:${s.port}</b></a> instead of ${esc(s.target)} — everything you do there is recorded. For webhooks, point the provider (or an ngrok tunnel) at this port.</span>
             <button class="btn sm" data-copy="http://localhost:${s.port}">${ic('copy')}</button></div>`
-          : `<div class="hint">${ic('info')}<span>Off. DB Checker sits in front of your app like a mirror: open the app through it and every request is recorded. Nothing in your app changes.</span></div>`;
+          : `<div class="hint">${ic('info')}<span>Off. WhatChanged sits in front of your app like a mirror: open the app through it and every request is recorded. Nothing in your app changes.</span></div>`;
     }
     if (ob) {
       const s = st.outbound || {};

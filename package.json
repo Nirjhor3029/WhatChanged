@@ -1,11 +1,12 @@
 {
-  "name": "db-checker",
+  "name": "whatchanged",
   "version": "1.0.0",
-  "description": "Snapshot any database (MySQL, MariaDB, PostgreSQL, SQL Server, SQLite, MongoDB) and see exactly which tables, rows and columns your code changed.",
+  "description": "Click something in your app, see everything it changed: database rows (MySQL, MariaDB, PostgreSQL, SQL Server, SQLite, MongoDB), logs, API calls and background jobs — for any stack.",
+  "keywords": ["database", "diff", "debugging", "developer-tools", "mysql", "postgresql", "mongodb", "sqlite", "logs", "http-proxy", "queues", "laravel", "nodejs"],
   "type": "module",
   "main": "server.js",
   "bin": {
-    "db-checker": "server.js"
+    "whatchanged": "server.js"
   },
   "scripts": {
     "start": "node server.js --open",

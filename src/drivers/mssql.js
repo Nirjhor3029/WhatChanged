@@ -19,7 +19,7 @@ export class MssqlDriver {
         user: cfg.user,
         password: cfg.password,
         database: cfg.database || 'master',
-        options: { encrypt: !!cfg.ssl, trustServerCertificate: true, appName: 'db-checker' },
+        options: { encrypt: !!cfg.ssl, trustServerCertificate: true, appName: 'whatchanged' },
         connectionTimeout: 15000,
         requestTimeout: 120000,
         pool: { max: 2, min: 0 },

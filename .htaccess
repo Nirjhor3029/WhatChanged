@@ -1,4 +1,4 @@
-# DB Checker is a Node.js app (npm start → http://localhost:4477).
+# WhatChanged is a Node.js app (npm start → http://localhost:4477).
 # Never let Apache serve this folder: storage/ holds encrypted credentials and their key.
 <IfModule mod_authz_core.c>
   Require all denied

@@ -10,6 +10,7 @@ import { Storage } from './src/storage.js';
 import { Snapshotter } from './src/snapshotter.js';
 import { Differ, PAGE, pageOut } from './src/differ.js';
 import { buildRelations } from './src/relations.js';
+import { reportFilename, reportHtml } from './src/htmlreport.js';
 import { scanCode } from './src/codescanner.js';
 import { DRIVERS, detectDriver, dropDriver, getDriver, openDriver } from './src/drivers/index.js';
 import { cut, safeId } from './src/util.js';
@@ -300,6 +301,15 @@ const actions = {
     return { columns: res.cols, key: t.rowkey, rows: res.rows, total: b.count === false ? null : await d.count(t) };
   },
 
+  'diff.html': async (b, conn) => {
+    const c = conn();
+    const from = safeId(b.from);
+    const to = safeId(b.to);
+    const report = new Differ(store, c.id).diff(from, to);
+    const html = reportHtml(report, (table) => store.readJson(store.diffRowsPath(c.id, from, to, table)));
+    return { filename: reportFilename(report), html };
+  },
+
   'diff.rows': async (b, conn) => {
     const size = Math.max(1, Math.min(500, Number(b.size) || PAGE));
     return new Differ(store, conn().id).rowsPage(safeId(b.from), safeId(b.to), String(b.table), String(b.kind), Math.max(0, Number(b.page) || 0), size);
@@ -368,6 +378,23 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
     hubFor(store, c.id).subscribe(res);
     return;
+  }
+
+  // HTML change report opened in its own tab (preview). A link can't send headers, so the token is in the query.
+  if (url.pathname === '/report.html') {
+    if (url.searchParams.get('token') !== TOKEN) return send(res, 403, 'Session expired — reload WhatChanged and open the report again.', 'text/plain; charset=utf-8');
+    try {
+      const c = store.connection(safeId(url.searchParams.get('conn') || ''));
+      const from = safeId(url.searchParams.get('from') || '');
+      const to = safeId(url.searchParams.get('to') || '');
+      const report = new Differ(store, c.id).diff(from, to);
+      const html = reportHtml(report, (table) => store.readJson(store.diffRowsPath(c.id, from, to, table)));
+      return send(res, 200, html, 'text/html; charset=utf-8', {
+        'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'",
+      });
+    } catch (e) {
+      return send(res, 400, 'Could not build the report: ' + (e.message || e), 'text/plain; charset=utf-8');
+    }
   }
 
   if (url.pathname.startsWith('/api/')) {

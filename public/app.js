@@ -835,6 +835,7 @@
           <label class="check" title="Check the database every few seconds"><span class="switch ${S.watch.on ? 'on' : ''}" id="watchSw" role="switch" aria-checked="${S.watch.on}" tabindex="0"></span>Live</label>
           <input class="input step-input" id="stepName" placeholder="What did you just do? (e.g. Place order)" maxlength="80">
           <button class="btn primary" id="captureBtn">${ic('camera')}Capture & compare</button>
+          <label class="check" title="Also download the change report as one HTML file after each capture"><input type="checkbox" id="saveHtml" ${ls.get('saveHtml', false) ? 'checked' : ''}>Save HTML</label>
         </div>
       </section>
       ${n <= 1 && !S.watch.changes.length ? `<div class="note" style="margin:-8px 0 20px">${ic('info')}<span><b>How to use:</b> go to your app and do one action (register, place an order, delete something…). Come back and press <b>Capture & compare</b> — you'll get a report of every ${V().row} that changed. With <b>Live</b> on, changed ${V().tables} light up here automatically.</span></div>` : ''}`;
@@ -863,6 +864,7 @@
     sw.onclick = toggle;
     sw.onkeydown = (e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggle(); } };
     $('#captureBtn').onclick = captureAndCompare;
+    $('#saveHtml').onchange = (e) => ls.set('saveHtml', e.target.checked);
     $('#stepName').onkeydown = (e) => { if (e.key === 'Enter') captureAndCompare(); };
   }
 
@@ -930,6 +932,7 @@
     S.meta = await api('snap.meta', { conn: S.conn.id, snap: sum.id });
     setBaseline(sum.id); // next capture compares against this step
     if (wasOn) startWatch();
+    if (ls.get('saveHtml', false)) await saveHtmlReport(from, sum.id);
     location.hash = `#/c/${S.conn.id}/report/${from}/${sum.id}`;
   }
 
@@ -1266,6 +1269,7 @@
           </div>
           <div class="row wrap" style="margin-top:16px">
             <button class="btn sm" id="copyMd">${ic('copy')}Copy summary</button>
+            <button class="btn sm" id="dlHtml" title="One HTML file with every changed ${v.row}, all ${v.cols} shown">${ic('code')}Export HTML</button>
             <button class="btn sm" id="dlJson">${ic('code')}Export JSON</button>
             <button class="btn sm ghost" id="refreshDiff">${ic('refresh')}Rebuild</button>
             <a class="btn sm ghost" href="#/c/${S.conn.id}">${ic('grid')}Back to overview</a>
@@ -1344,14 +1348,30 @@
       const md = storyMarkdown(d);
       try { await navigator.clipboard.writeText(md); toast('Summary copied as Markdown'); } catch { toast('Clipboard not available', 'err'); }
     };
-    $('#dlJson').onclick = () => {
-      const blob = new Blob([JSON.stringify(d, null, 2)], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `db-changes_${d.database}_${d.from.id}_${d.to.id}.json`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    $('#dlJson').onclick = () => download(JSON.stringify(d, null, 2), `db-changes_${d.database}_${d.from.id}_${d.to.id}.json`, 'application/json');
+    $('#dlHtml').onclick = async (e) => {
+      const btn = e.currentTarget; // currentTarget is null once the handler awaits
+      btn.disabled = true;
+      try { await saveHtmlReport(d.from.id, d.to.id); } finally { btn.disabled = false; }
     };
+  }
+
+  function download(text, filename, type) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type }));
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  async function saveHtmlReport(from, to) {
+    try {
+      const r = await api('diff.html', { conn: S.conn.id, from, to });
+      download(r.html, r.filename, 'text/html');
+      toast(`Saved <code>${esc(r.filename)}</code>`);
+    } catch (e) {
+      toast(`HTML report failed: ${esc(e.message)}`, 'err');
+    }
   }
 
   function buildStory(d, v) {
@@ -1636,6 +1656,7 @@
             </div>
             <div class="hist-actions">
               ${prev ? `<a class="btn sm" href="#/c/${S.conn.id}/report/${prev.id}/${s.id}" title="Compare with the previous snapshot">${ic('report')}vs previous</a>` : ''}
+              ${prev ? `<a class="btn sm ghost" href="${reportUrl(prev.id, s.id)}" target="_blank" rel="noopener" title="Open the change report vs the previous snapshot as an HTML page (notes, print / PDF, save)">${ic('code')}HTML</a>` : ''}
               ${s.status === 'complete' && s.id !== S.baseline ? `<button class="btn sm ghost" data-base="${s.id}">${ic('flag')}Set baseline</button>` : ''}
               <button class="btn sm icon ghost" data-rename="${s.id}" title="Rename">${ic('edit')}</button>
               <button class="btn sm icon ghost danger" data-delete="${s.id}" title="Delete">${ic('trash')}</button>
@@ -1698,8 +1719,11 @@
     if (SEL.length !== 2) { bar.innerHTML = SEL.length === 1 ? `<div class="compare-bar"><span class="muted">Select one more snapshot to compare</span></div>` : ''; return; }
     const [a, b] = [...SEL].sort();
     bar.innerHTML = `<div class="compare-bar"><span><b>${esc(snapById(a).label)}</b> <span class="muted">→</span> <b>${esc(snapById(b).label)}</b></span>
+      <a class="btn ghost" href="${reportUrl(a, b)}" target="_blank" rel="noopener">${ic('code')}HTML preview</a>
       <a class="btn primary" href="#/c/${S.conn.id}/report/${a}/${b}">${ic('report')}Compare</a></div>`;
   }
+
+  const reportUrl = (from, to) => `/report.html?${new URLSearchParams({ token: TOKEN, conn: S.conn.id, from, to })}`;
 
   /* ================================================================ modals */
   function modal(html) {

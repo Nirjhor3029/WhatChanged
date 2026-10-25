@@ -57,6 +57,7 @@ export function reportHtml(report, full = () => null) {
 <meta name="wc-report" content="${esc(`${report.database}|${report.from.id}|${report.to.id}`)}">
 <meta name="wc-file" content="${esc(reportFilename(report))}">
 <meta name="wc-saved" content="">
+<script type="application/json" id="wc-view">{}</script>
 <style>${CSS}</style>
 </head>
 <body>
@@ -83,7 +84,12 @@ export function reportHtml(report, full = () => null) {
   ${otherChanges(report)}
   <div class="legend">
     <span><i class="sw ins"></i>inserted ${esc(v.row)}</span><span><i class="sw upd"></i>changed cell (old → new)</span><span><i class="sw del"></i>deleted ${esc(v.row)}</span>
-    <button type="button" id="wcOcAll" class="oc-label" title="Switch “Only changed ${esc(v.cols)}” on or off for every ${esc(v.table)}">Only changed ${esc(v.cols)} in all ${esc(v.tables)}</button>
+    <span class="view-acts">
+      <button type="button" id="wcCollapseAll" title="Fold every ${esc(v.table)} down to its title">▸ Collapse all</button>
+      <button type="button" id="wcExpandAll" title="Open every ${esc(v.table)}">▾ Expand all</button>
+      <button type="button" id="wcOcAll" class="oc-label" title="Switch “Only changed ${esc(v.cols)}” on or off for every ${esc(v.table)}">Only changed ${esc(v.cols)} in all ${esc(v.tables)}</button>
+      <button type="button" id="wcResetView" title="Show every ${esc(v.table)} and ${esc(v.col)} again">↺ Reset view</button>
+    </span>
   </div>
 </header>
 <main>${body}</main>
@@ -111,8 +117,9 @@ function tableSection(e, fullLists, v) {
   const set = new Set(changedCols);
   const toggle = lists.updated_rows.length > 0 && cols.some((c) => !set.has(c) && !key.includes(c));
   const ocId = 'oc-' + anchor(e.name);
-  let html = `<section class="tbl" id="${anchor(e.name)}">${toggle ? `<input type="checkbox" class="oc-input" id="${ocId}">` : ''}
-    <h2><code>${esc(e.name)}</code>${status}<span class="rows">${fmt(e.rows_before)} → ${fmt(e.rows_after)} ${esc(v.rows)}</span><button type="button" class="add-note" data-for="t:${esc(e.name)}">✎ Add note</button>${toggle ? `<label for="${ocId}" class="oc-label" title="Hide the ${esc(v.cols)} that kept their value in the updated ${esc(v.rows)} of this ${esc(v.table)}">Only changed ${esc(v.cols)}</label>` : ''}<a class="up" href="#">↑ top</a></h2>
+  const hasRows = LISTS.some((k) => lists[k].length);
+  let html = `<section class="tbl" id="${anchor(e.name)}" data-table="${esc(e.name)}" data-changed="${esc(JSON.stringify(changedCols))}">${toggle ? `<input type="checkbox" class="oc-input" id="${ocId}">` : ''}
+    <h2><button type="button" class="col-tg" title="Collapse / expand this ${esc(v.table)}" aria-expanded="true">▾</button><code>${esc(e.name)}</code>${status}<span class="rows">${fmt(e.rows_before)} → ${fmt(e.rows_after)} ${esc(v.rows)}</span><button type="button" class="add-note" data-for="t:${esc(e.name)}">✎ Add note</button>${hasRows ? `<button type="button" class="colbtn" title="Choose which ${esc(v.cols)} to show">${v.cols === 'fields' ? 'Fields' : 'Columns'} ▾</button>` : ''}${toggle ?`<label for="${ocId}" class="oc-label" title="Hide the ${esc(v.cols)} that kept their value in the updated ${esc(v.rows)} of this ${esc(v.table)}">Only changed ${esc(v.cols)}</label>` : ''}<a class="up" href="#">↑ top</a></h2>
     <div class="explain">${explain(e, D, changedCols, v).map((p) => `<p>${p}</p>`).join('')}</div>
     ${noteBox('t:' + e.name, `Note on ${e.name}`, `Why did ${e.name} change? Is it expected?`, false)}`;
 
@@ -154,14 +161,15 @@ function rowsTable(kind, list, cols, key, changedCols) {
   const changed = new Set(changedCols);
   // In updated lists, columns no row touched get class "nc" so the header checkbox can hide them.
   const cc = (c) => [key.includes(c) ? 'key' : '', updated && !changed.has(c) && !key.includes(c) ? 'nc' : ''].filter(Boolean).join(' ');
-  const head = `<tr>${cols.map((c) => `<th class="${cc(c)}">${esc(c)}${key.includes(c) ? ' <span class="k">key</span>' : ''}</th>`).join('')}</tr>`;
+  // data-c (column position) lets the "Columns" menu hide a column in every list of the table.
+  const head = `<tr>${cols.map((c, i) => `<th class="${cc(c)}" data-c="${i}" data-name="${esc(c)}">${esc(c)}${key.includes(c) ? ' <span class="k">key</span>' : ''}</th>`).join('')}</tr>`;
   const rows = list.map((item) => {
     const ch = item.changes || {};
-    const cells = cols.map((c) => {
+    const cells = cols.map((c, i) => {
       const refs = item.refs?.[c];
       const ref = refs?.length ? `<div class="ref">${refs.map((r) => (r.missing ? `<span class="miss">→ ${esc(r.table)} #${esc(r.id)} not found</span>` : r.label ? `→ ${esc(r.label)}` : '')).filter(Boolean).join('<br>')}</div>` : '';
-      if (c in ch) return `<td class="chg ${cc(c)}"><del>${val(ch[c][0])}</del><span class="arr">→</span><ins>${val(ch[c][1])}</ins>${ref}</td>`;
-      return `<td class="${cc(c)}">${c in (item.row || {}) ? val(item.row[c]) : '<span class="na">—</span>'}${ref}</td>`;
+      if (c in ch) return `<td class="chg ${cc(c)}" data-c="${i}"><del>${val(ch[c][0])}</del><span class="arr">→</span><ins>${val(ch[c][1])}</ins>${ref}</td>`;
+      return `<td class="${cc(c)}" data-c="${i}">${c in (item.row || {}) ? val(item.row[c]) : '<span class="na">—</span>'}${ref}</td>`;
     }).join('');
     return `<tr class="${kind.split('_')[0]}">${cells}</tr>`;
   }).join('');
@@ -352,7 +360,34 @@ h1{margin:4px 0 6px;font-size:28px}
 .no-oc #wcOcAll{display:none}
 .note{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:6px;padding:8px 12px;color:var(--text)}
 .tbl{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:22px;scroll-margin-top:12px}
-.tbl h2{margin:0 0 8px;font-size:18px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.tbl h2{margin:0 0 8px;font-size:18px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;position:relative}
+.tbl{scroll-margin-top:60px}
+.tbl.collapsed{padding-bottom:10px}
+.tbl.collapsed > :not(h2){display:none!important}
+.tbl.collapsed h2{margin:0}
+.col-tg{font:inherit;font-size:14px;width:26px;height:26px;line-height:1;padding:0;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);cursor:pointer}
+.col-tg:hover,.colbtn:hover,.view-acts button:hover{border-color:var(--accent)}
+.colbtn,.view-acts button:not(.oc-label){font:inherit;font-size:12px;font-weight:500;font-family:system-ui,sans-serif;padding:2px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);cursor:pointer}
+.colbtn.on{border-color:var(--accent);color:var(--accent)}
+.tbl h2 .colbtn{margin-left:auto}
+.tbl h2 .colbtn + .oc-label{margin-left:0}
+.tbl h2 .colbtn + .up{margin-left:8px}
+.view-acts{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
+.view-acts .oc-label{margin-left:0}
+.view-acts button:not(.oc-label){font-size:12.5px;padding:4px 10px;background:var(--card)}
+.colpop{position:absolute;right:0;top:100%;z-index:6;margin-top:6px;width:300px;max-width:90vw;background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.25);padding:10px;font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--text)}
+.colpop input[type=search]{width:100%;font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);outline:none}
+.colpop input[type=search]:focus{border-color:var(--accent)}
+.cp-acts{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.cp-acts button{font:inherit;font-size:12px;padding:3px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);cursor:pointer}
+.cp-acts button:hover{border-color:var(--accent)}
+.cp-list{max-height:280px;overflow:auto;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:4px 0}
+.cp-list label{display:flex;align-items:center;gap:6px;padding:3px 4px;border-radius:4px;cursor:pointer;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;overflow-wrap:anywhere}
+.cp-list label:hover{background:var(--code)}
+.cp-list input{accent-color:var(--accent);flex:none}
+.cp-list .tag{margin-left:auto}
+.tag.key{background:var(--code);color:var(--accent)}
+.cp-n{color:var(--dim);font-size:12px;margin-top:6px}
 .tbl h2 code{font-size:17px}
 .tbl h2 .rows{color:var(--dim);font-size:13px;font-weight:500}
 .tbl h2 .up{margin-left:auto;font-size:12px;font-weight:500;text-decoration:none}
@@ -387,7 +422,8 @@ footer{color:var(--dim);font-size:12px;padding-bottom:30px}
 @media print{
 :root,:root[data-theme="dark"]{${LIGHT}}
 body{background:#fff;font-size:11px}
-.bar,.oc-label,.up,.add-note,.nt-bar,.nt-src,.nt-foot,.notes:not(.filled){display:none!important}
+.bar,.oc-label,.up,.add-note,.nt-bar,.nt-src,.nt-foot,.notes:not(.filled),.col-tg,.colbtn,.colpop,.view-acts{display:none!important}
+.tbl.collapsed h2::after{content:"(details hidden)";font-size:11px;font-weight:400;color:var(--dim)}
 .notes.src .nt-body{display:block}
 .notes.filled{display:block;break-inside:avoid}
 .nt-body:empty::before{content:none}
@@ -504,15 +540,19 @@ const SCRIPT = `
     boxes.forEach(function (b) { var body = $('.nt-body', b); if (!isEmpty(body)) out[b.getAttribute('data-note')] = body.innerHTML; });
     return out;
   }
-  // Notes typed after the file was last saved live in this browser: bring them back.
+  // Notes and view choices made after the file was last saved live in this browser: bring them back.
   var saved = store.get(KEY);
   var fileAt = meta('wc-saved');
+  var fileView = {};
+  try { fileView = JSON.parse($('#wc-view').textContent || '{}'); } catch (e) { fileView = {}; }
+  var startView = fileView;
   if (saved && saved.notes && (!fileAt || saved.at > fileAt)) {
     boxes.forEach(function (b) {
       var html = saved.notes[b.getAttribute('data-note')];
       if (html !== undefined) $('.nt-body', b).innerHTML = html;
     });
-    if (Object.keys(saved.notes).length) status('Notes restored from this browser');
+    if (saved.view) startView = saved.view;
+    if (Object.keys(saved.notes).length || saved.view) status('Notes and view restored from this browser');
   }
   boxes.forEach(mark);
 
@@ -521,9 +561,9 @@ const SCRIPT = `
   function autosave() {
     clearTimeout(timer);
     timer = setTimeout(function () {
-      var ok = store.set(KEY, { at: new Date().toISOString(), notes: collect() });
+      var ok = store.set(KEY, { at: new Date().toISOString(), notes: collect(), view: viewState() });
       dirty = !ok;
-      status(ok ? 'Notes saved in this browser \\u2014 use \\u201CSave file\\u201D to keep them in the file' : 'Could not autosave \\u2014 use \\u201CSave file\\u201D');
+      status(ok ? 'Saved in this browser \\u2014 use \\u201CSave file\\u201D to keep it in the file' : 'Could not autosave \\u2014 use \\u201CSave file\\u201D');
     }, 400);
   }
 
@@ -668,6 +708,9 @@ const SCRIPT = `
     clone.querySelector('meta[name="wc-saved"]').setAttribute('content', at);
     clone.querySelector('#wcStatus').textContent = '';
     Array.prototype.forEach.call(clone.querySelectorAll('.notes'), function (b) { if (!b.classList.contains('keep')) b.classList.remove('open'); b.classList.remove('keep'); b.classList.remove('src'); });
+    Array.prototype.forEach.call(clone.querySelectorAll('.colpop'), function (p) { p.remove(); });
+    // The view (collapsed tables, hidden columns…) travels inside the file; "<" escaped so it can't end the script tag.
+    clone.querySelector('#wc-view').textContent = JSON.stringify(viewState()).replace(/</g, '\\\\u003c');
     return { at: at, html: '<!doctype html>\\n' + clone.outerHTML };
   }
   async function saveFile() {
@@ -687,7 +730,7 @@ const SCRIPT = `
         setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
       }
       $('meta[name="wc-saved"]').setAttribute('content', page.at);
-      store.set(KEY, { at: page.at, notes: collect() });
+      store.set(KEY, { at: page.at, notes: collect(), view: viewState() });
       dirty = false;
       status('Saved ' + (handle ? handle.name : name));
     } catch (e) {
@@ -706,12 +749,153 @@ const SCRIPT = `
   var ocAll = $('#wcOcAll');
   function syncAll() { ocAll.classList.toggle('on', ocs.length > 0 && ocs.every(function (x) { return x.checked; })); }
   if (!ocs.length) root.classList.add('no-oc');
-  ocs.forEach(function (x) { x.addEventListener('change', syncAll); });
+  ocs.forEach(function (x) { x.addEventListener('change', function () { syncAll(); autosave(); }); });
   ocAll.onclick = function () {
     var on = !ocs.every(function (x) { return x.checked; });
     ocs.forEach(function (x) { x.checked = on; });
     syncAll();
+    autosave();
   };
+
+  /* ---- view: collapsed tables and hidden columns, remembered with the notes */
+  var sections = $$('section.tbl');
+  var colStyle = $('#wcColStyle');
+  if (!colStyle) { colStyle = document.createElement('style'); colStyle.id = 'wcColStyle'; document.head.appendChild(colStyle); }
+  var hidden = {}; // table name -> { column name: true }
+  function tableOf(s) { return s.getAttribute('data-table'); }
+  function colsOf(s) {
+    return $$('.wrap table thead th[data-c]', s).filter(function (th, i, all) {
+      return all.findIndex(function (x) { return x.getAttribute('data-c') === th.getAttribute('data-c'); }) === i;
+    }).map(function (th) { return { i: th.getAttribute('data-c'), name: th.getAttribute('data-name'), key: th.classList.contains('key') }; });
+  }
+  function changedOf(s) { try { return JSON.parse(s.getAttribute('data-changed') || '[]'); } catch (e) { return []; } }
+
+  function viewState() {
+    var v = { collapsed: [], hidden: {}, only: [] };
+    sections.forEach(function (s) {
+      var t = tableOf(s);
+      if (s.classList.contains('collapsed')) v.collapsed.push(t);
+      var oc = $('.oc-input', s);
+      if (oc && oc.checked) v.only.push(t);
+      var h = Object.keys(hidden[t] || {});
+      if (h.length) v.hidden[t] = h;
+    });
+    return v;
+  }
+  function renderColumns() {
+    var css = [];
+    sections.forEach(function (s) {
+      var h = hidden[tableOf(s)] || {};
+      var cols = colsOf(s);
+      var shown = 0;
+      cols.forEach(function (c) {
+        if (h[c.name]) css.push('#' + CSS.escape(s.id) + ' [data-c="' + c.i + '"]{display:none}');
+        else shown++;
+      });
+      var btn = $('.colbtn', s);
+      if (btn) {
+        btn.textContent = btn.textContent.split(' ')[0] + ' ' + (shown < cols.length ? shown + '/' + cols.length + ' ' : '') + '\\u25BE';
+        btn.classList.toggle('on', shown < cols.length);
+      }
+    });
+    colStyle.textContent = css.join('\\n');
+  }
+  function setCollapsed(s, on) {
+    s.classList.toggle('collapsed', on);
+    $('.col-tg', s).textContent = on ? '\\u25B8' : '\\u25BE';
+    $('.col-tg', s).setAttribute('aria-expanded', on ? 'false' : 'true');
+  }
+  function applyView(v) {
+    v = v || {};
+    hidden = {};
+    Object.keys(v.hidden || {}).forEach(function (t) { hidden[t] = {}; (v.hidden[t] || []).forEach(function (c) { hidden[t][c] = true; }); });
+    sections.forEach(function (s) {
+      var t = tableOf(s);
+      setCollapsed(s, (v.collapsed || []).indexOf(t) >= 0);
+      var oc = $('.oc-input', s);
+      if (oc) oc.checked = (v.only || []).indexOf(t) >= 0;
+    });
+    syncAll();
+    renderColumns();
+  }
+
+  sections.forEach(function (s) {
+    $('.col-tg', s).onclick = function () { setCollapsed(s, !s.classList.contains('collapsed')); autosave(); };
+    var btn = $('.colbtn', s);
+    if (btn) btn.onclick = function (e) { e.stopPropagation(); openColumns(s, btn); };
+  });
+  $('#wcCollapseAll').onclick = function () { sections.forEach(function (s) { setCollapsed(s, true); }); autosave(); };
+  $('#wcExpandAll').onclick = function () { sections.forEach(function (s) { setCollapsed(s, false); }); autosave(); };
+  $('#wcResetView').onclick = function () { closeColumns(); applyView({}); autosave(); };
+  // Jumping to a table from the list at the top opens it.
+  $$('a[href^="#t-"]').forEach(function (a) {
+    a.addEventListener('click', function () {
+      var s = document.getElementById(a.getAttribute('href').slice(1));
+      if (s && s.classList.contains('collapsed')) { setCollapsed(s, false); autosave(); }
+    });
+  });
+
+  /* columns menu */
+  var pop = null;
+  function closeColumns() { if (pop) { pop.remove(); pop = null; } }
+  document.addEventListener('click', function (e) { if (pop && !pop.contains(e.target)) closeColumns(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeColumns(); });
+  function openColumns(s, btn) {
+    var again = pop && pop.parentNode === btn.parentNode;
+    closeColumns();
+    if (again) return;
+    var t = tableOf(s);
+    var cols = colsOf(s);
+    var changed = changedOf(s);
+    hidden[t] = hidden[t] || {};
+    pop = document.createElement('div');
+    pop.className = 'colpop';
+    pop.innerHTML = '<input type="search" placeholder="Find a column\\u2026">'
+      + '<div class="cp-acts"><button type="button" data-a="all">Show all</button><button type="button" data-a="key">Only key</button>'
+      + (changed.length ? '<button type="button" data-a="changed">Key + changed</button>' : '') + '</div><div class="cp-list"></div><div class="cp-n"></div>';
+    var list = $('.cp-list', pop);
+    cols.forEach(function (c) {
+      var row = document.createElement('label');
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !hidden[t][c.name];
+      cb.addEventListener('change', function () { if (cb.checked) delete hidden[t][c.name]; else hidden[t][c.name] = true; update(); });
+      row.appendChild(cb);
+      row.appendChild(document.createTextNode(' ' + c.name));
+      if (c.key) { var k = document.createElement('span'); k.className = 'tag key'; k.textContent = 'key'; row.appendChild(k); }
+      if (changed.indexOf(c.name) >= 0) { var g = document.createElement('span'); g.className = 'tag upd'; g.textContent = 'changed'; row.appendChild(g); }
+      row.setAttribute('data-name', c.name.toLowerCase());
+      list.appendChild(row);
+    });
+    function count() {
+      var n = cols.filter(function (c) { return !hidden[t][c.name]; }).length;
+      $('.cp-n', pop).textContent = n + ' of ' + cols.length + ' shown';
+    }
+    function update() { count(); renderColumns(); autosave(); }
+    function setAll(keep) {
+      hidden[t] = {};
+      cols.forEach(function (c) { if (!keep(c)) hidden[t][c.name] = true; });
+      $$('.cp-list input', pop).forEach(function (cb, i) { cb.checked = !hidden[t][cols[i].name]; });
+      update();
+    }
+    $('.cp-acts', pop).onclick = function (e) {
+      var a = e.target.getAttribute('data-a');
+      if (a === 'all') setAll(function () { return true; });
+      if (a === 'key') setAll(function (c) { return c.key; });
+      if (a === 'changed') setAll(function (c) { return c.key || changed.indexOf(c.name) >= 0; });
+    };
+    var find = $('input[type=search]', pop);
+    find.oninput = function () {
+      var q = find.value.trim().toLowerCase();
+      $$('.cp-list label', pop).forEach(function (l) { l.style.display = !q || l.getAttribute('data-name').indexOf(q) >= 0 ? '' : 'none'; });
+    };
+    pop.addEventListener('click', function (e) { e.stopPropagation(); });
+    btn.parentNode.appendChild(pop);
+    count();
+    find.focus();
+  }
+
+  applyView(startView);
 
   /* ---- print / PDF */
   $('#wcPrint').onclick = function () { window.print(); };

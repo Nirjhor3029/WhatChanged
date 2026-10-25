@@ -10,16 +10,25 @@ const LISTS = ['inserted_rows', 'updated_rows', 'deleted_rows'];
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (n) => Number(n || 0).toLocaleString('en-US');
 const plural = (n, one, many) => `${fmt(n)} ${n === 1 ? one : many}`;
-const anchor = (name) => 't-' + String(name).replace(/[^A-Za-z0-9_-]/g, '_');
+const anchor = (name, prefix = '') => (prefix ? prefix + '-' : '') + 't-' + String(name).replace(/[^A-Za-z0-9_-]/g, '_');
 
 const vocab = (driver) => driver === 'mongodb'
   ? { table: 'collection', tables: 'collections', row: 'document', rows: 'documents', col: 'field', cols: 'fields' }
   : { table: 'table', tables: 'tables', row: 'row', rows: 'rows', col: 'column', cols: 'columns' };
 
+const filePart = (s) => String(s || '').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+
 /** Report filename: database, step names and time, safe for any OS. */
 export function reportFilename(report) {
-  const part = (s) => String(s || '').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
-  return ['whatchanged', part(report.database), part(report.from.label), 'to', part(report.to.label), report.to.id].filter(Boolean).join('_') + '.html';
+  return ['whatchanged', filePart(report.database), filePart(report.from.label), 'to', filePart(report.to.label), report.to.id].filter(Boolean).join('_') + '.html';
+}
+
+/** Filename for a report that combines several captures. */
+export function reportFilenameMulti(items) {
+  if (!items.length) return 'whatchanged-report.html';
+  const first = items[0].report;
+  const last = items[items.length - 1].report;
+  return ['whatchanged', filePart(first.database), filePart(first.from.label), 'to', filePart(last.to.label), `${items.length}-captures`, last.to.id].filter(Boolean).join('_') + '.html';
 }
 
 /**
@@ -69,6 +78,7 @@ export function reportHtml(report, full = () => null) {
   <button type="button" id="wcPrint" title="Print, or choose “Save as PDF”">🖨 Print / PDF</button>
 </div>
 <header class="top">
+  <h1 class="capture-title">${esc(report.to.label || 'Snapshot')}</h1>
   ${noteBox('general', 'Notes', 'Write what you did, what you expected, what looks wrong… (you can paste text and screenshots)', true)}
   <div class="eyebrow">WhatChanged · change report</div>
   <h1>${esc(title)}</h1>
@@ -99,10 +109,146 @@ export function reportHtml(report, full = () => null) {
 </html>`;
 }
 
+/**
+ * One self-contained HTML file with several captures, oldest first.
+ * Each item is { report, full } where full(table) returns the complete lists of a paged table.
+ * @param items   array of { report: Differ.diff() result, full?: (table) => object|null }
+ * @param opts    { title?: string }
+ */
+export function reportHtmlMulti(items, opts = {}) {
+  if (!items.length) throw new Error('No captures to include');
+  const first = items[0].report;
+  const last = items[items.length - 1].report;
+  const v = vocab(first.driver);
+  const heading = String(opts.title || '').trim().slice(0, 80) || 'All captures';
+
+  const sum = { inserted: 0, updated: 0, deleted: 0, schema: 0 };
+  const touched = new Set();
+  for (const { report } of items) {
+    const T = report.totals || {};
+    sum.inserted += T.inserted || 0;
+    sum.updated += T.updated || 0;
+    sum.deleted += T.deleted || 0;
+    sum.schema += T.schema || 0;
+    for (const e of report.tables) touched.add(e.name);
+  }
+
+  const order = (e) => (e.status !== 'changed' ? 1e9 : 0) + (e.data?.inserted || 0) + (e.data?.updated || 0) + (e.data?.deleted || 0) + (e.schema?.count || 0) * 10;
+
+  const overview = items.map(({ report }, i) => {
+    const T = report.totals || {};
+    const counts = [
+      T.inserted ? `+${fmt(T.inserted)}` : '',
+      T.updated ? `~${fmt(T.updated)}` : '',
+      T.deleted ? `−${fmt(T.deleted)}` : '',
+      T.schema ? `${fmt(T.schema)} structure` : '',
+    ].filter(Boolean).join(' · ') || 'No changes';
+    return `<li>
+      <a href="#cap-${esc(report.to.id)}">
+        <span class="cap-n">${i + 1}</span>
+        <span class="cap-main"><b>${esc(report.to.label || 'Snapshot')}</b><span class="cap-when">${esc(when(report.to.created_at))} · from ${esc(report.from.label)}</span></span>
+        <span class="cap-counts">${counts}</span>
+      </a>
+    </li>`;
+  }).join('');
+
+  const captures = items.map(({ report, full }, i) => {
+    const T = report.totals || {};
+    const scope = report.to.id;
+    const tables = [...report.tables].sort((a, b) => order(b) - order(a));
+    const title = T.tables ? `${plural(T.tables, v.table, v.tables)} changed` : 'Nothing changed';
+    const toc = tables.map((e) => {
+      const D = e.data || {};
+      const tags = [
+        e.status === 'new' && '<span class="tag ins">new</span>',
+        e.status === 'dropped' && '<span class="tag del">dropped</span>',
+        D.inserted && e.status !== 'new' ? `<span class="tag ins">+${fmt(D.inserted)}</span>` : '',
+        D.updated ? `<span class="tag upd">~${fmt(D.updated)}</span>` : '',
+        D.deleted && e.status !== 'dropped' ? `<span class="tag del">−${fmt(D.deleted)}</span>` : '',
+        e.schema?.count && e.status === 'changed' ? '<span class="tag sch">structure</span>' : '',
+      ].filter(Boolean).join('');
+      return `<li><a href="#${anchor(e.name, `cap-${scope}`)}"><code>${esc(e.name)}</code></a>${tags}</li>`;
+    }).join('');
+    const body = tables.map((e) => tableSection(e, full ? full(e.name) : null, v, scope)).join('');
+    return `${i ? '<hr class="cap-rule" aria-hidden="true">' : ''}
+    <section class="capture" id="cap-${esc(scope)}">
+      <header class="cap-head">
+        <div class="cap-kicker"><span class="cap-step">${i + 1}</span> Capture ${i + 1} of ${items.length}</div>
+        <h2 class="cap-title">${esc(report.to.label || 'Snapshot')}</h2>
+        <p class="cap-change">${esc(title)}</p>
+        <p class="sub">from <b>${esc(report.from.label)}</b> <span class="dim">${esc(when(report.from.created_at))}</span>
+          → to <b>${esc(report.to.label)}</b> <span class="dim">${esc(when(report.to.created_at))}</span></p>
+        ${noteBox(`${scope}:general`, 'Notes for this capture', 'What did you do in this step? What did you expect?', false)}
+        <div class="nums">
+          <div class="num ins"><b>${fmt(T.inserted || 0)}</b><span>inserted</span></div>
+          <div class="num upd"><b>${fmt(T.updated || 0)}</b><span>updated</span></div>
+          <div class="num del"><b>${fmt(T.deleted || 0)}</b><span>deleted</span></div>
+          <div class="num sch"><b>${fmt(T.schema || 0)}</b><span>structure changes</span></div>
+        </div>
+        ${T.tables ? `<nav class="toc"><h2>Changed ${esc(v.tables)}</h2><ul>${toc}</ul></nav>` : `<p class="note">No ${v.rows} were inserted, updated or deleted and no structure changed in this capture.</p>`}
+        ${otherChanges(report)}
+      </header>
+      <div class="cap-body">${body}</div>
+    </section>`;
+  }).join('');
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(heading)} · ${esc(first.database)} · WhatChanged</title>
+<meta name="wc-report" content="${esc(`${first.database}|combined|${items.map((x) => x.report.to.id).join(',')}`)}">
+<meta name="wc-file" content="${esc(reportFilenameMulti(items))}">
+<meta name="wc-saved" content="">
+<script type="application/json" id="wc-view">{}</script>
+<style>${CSS}</style>
+</head>
+<body>
+<div class="bar">
+  <span class="brand">WhatChanged</span>
+  <span class="status" id="wcStatus"></span>
+  <button type="button" id="wcTheme" title="Switch theme">◐ Auto</button>
+  <button type="button" id="wcSave" title="Save this file with your notes (Ctrl+S)">💾 Save file</button>
+  <button type="button" id="wcPrint" title="Print, or choose “Save as PDF”">🖨 Print / PDF</button>
+</div>
+<header class="top">
+  <h1 class="capture-title">${esc(heading)}</h1>
+  <div class="eyebrow">WhatChanged · combined change report</div>
+  <p class="sub">Database <code>${esc(first.database)}</code> (${esc(first.driver)}) · ${items.length} ${items.length === 1 ? 'capture' : 'captures'} · from <b>${esc(first.from.label)}</b> <span class="dim">${esc(when(first.from.created_at))}</span>
+    → to <b>${esc(last.to.label)}</b> <span class="dim">${esc(when(last.to.created_at))}</span></p>
+  <div class="nums">
+    <div class="num ins"><b>${fmt(sum.inserted)}</b><span>inserted</span></div>
+    <div class="num upd"><b>${fmt(sum.updated)}</b><span>updated</span></div>
+    <div class="num del"><b>${fmt(sum.deleted)}</b><span>deleted</span></div>
+    <div class="num sch"><b>${fmt(sum.schema)}</b><span>structure changes</span></div>
+  </div>
+  <p class="multi-summary">Across ${items.length} ${items.length === 1 ? 'capture' : 'captures'}: ${fmt(touched.size)} different ${esc(v.tables)} touched.</p>
+  ${noteBox('combined:general', 'Notes for the whole report', 'Write what this whole sequence of actions was meant to test…', true)}
+  <nav class="cap-list"><h2>Captures in this report</h2><ol>${overview}</ol></nav>
+  <div class="legend">
+    <span><i class="sw ins"></i>inserted ${esc(v.row)}</span><span><i class="sw upd"></i>changed cell (old → new)</span><span><i class="sw del"></i>deleted ${esc(v.row)}</span>
+    <span class="view-acts">
+      <button type="button" id="wcCollapseAll" title="Fold every ${esc(v.table)} down to its title">▸ Collapse all</button>
+      <button type="button" id="wcExpandAll" title="Open every ${esc(v.table)}">▾ Expand all</button>
+      <button type="button" id="wcOcAll" class="oc-label" title="Switch “Only changed ${esc(v.cols)}” on or off for every ${esc(v.table)}">Only changed ${esc(v.cols)} in all ${esc(v.tables)}</button>
+      <button type="button" id="wcResetView" title="Show every ${esc(v.table)} and ${esc(v.col)} again">↺ Reset view</button>
+    </span>
+  </div>
+</header>
+<main class="captures">${captures}</main>
+<footer>Generated by WhatChanged · ${esc(when(new Date().toISOString()))} · ${items.length} ${items.length === 1 ? 'capture' : 'captures'}</footer>
+<script>${SCRIPT}</script>
+</body>
+</html>`;
+}
+
 /* ------------------------------------------------------------------ table */
 
-function tableSection(e, fullLists, v) {
+function tableSection(e, fullLists, v, scope = '') {
   const D = e.data || {};
+  const dom = scope ? `cap-${scope}` : '';
+  const noteId = (id) => (scope ? `${scope}:${id}` : id);
   const lists = {};
   for (const k of LISTS) lists[k] = (D.paged && fullLists?.[k]) || D[k] || [];
   const changedCols = Object.keys(D.changed_columns || {});
@@ -116,12 +262,12 @@ function tableSection(e, fullLists, v) {
   // "Only changed columns" switch for this table: only when its updated rows have columns that did not change.
   const set = new Set(changedCols);
   const toggle = lists.updated_rows.length > 0 && cols.some((c) => !set.has(c) && !key.includes(c));
-  const ocId = 'oc-' + anchor(e.name);
+  const ocId = 'oc-' + anchor(e.name, dom);
   const hasRows = LISTS.some((k) => lists[k].length);
-  let html = `<section class="tbl" id="${anchor(e.name)}" data-table="${esc(e.name)}" data-changed="${esc(JSON.stringify(changedCols))}">${toggle ? `<input type="checkbox" class="oc-input" id="${ocId}">` : ''}
-    <h2><button type="button" class="col-tg" title="Collapse / expand this ${esc(v.table)}" aria-expanded="true">▾</button><code>${esc(e.name)}</code>${status}<span class="rows">${fmt(e.rows_before)} → ${fmt(e.rows_after)} ${esc(v.rows)}</span><button type="button" class="add-note" data-for="t:${esc(e.name)}">✎ Add note</button>${hasRows ? `<button type="button" class="colbtn" title="Choose which ${esc(v.cols)} to show">${v.cols === 'fields' ? 'Fields' : 'Columns'} ▾</button>` : ''}${toggle ?`<label for="${ocId}" class="oc-label" title="Hide the ${esc(v.cols)} that kept their value in the updated ${esc(v.rows)} of this ${esc(v.table)}">Only changed ${esc(v.cols)}</label>` : ''}<a class="up" href="#">↑ top</a></h2>
-    <div class="explain">${explain(e, D, changedCols, v).map((p) => `<p>${p}</p>`).join('')}</div>
-    ${noteBox('t:' + e.name, `Note on ${e.name}`, `Why did ${e.name} change? Is it expected?`, false)}`;
+  let html = `<section class="tbl" id="${anchor(e.name, dom)}" data-table="${esc(e.name)}"${scope ? ` data-key="${esc(scope + '|' + e.name)}"` : ''} data-changed="${esc(JSON.stringify(changedCols))}">${toggle ? `<input type="checkbox" class="oc-input" id="${ocId}">` : ''}
+    <h2><button type="button" class="col-tg" title="Collapse / expand this ${esc(v.table)}" aria-expanded="true">▾</button><code>${esc(e.name)}</code>${status}<span class="rows">${fmt(e.rows_before)} → ${fmt(e.rows_after)} ${esc(v.rows)}</span><button type="button" class="add-note" data-for="${esc(noteId('t:' + e.name))}">✎ Add note</button>${hasRows ? `<button type="button" class="colbtn" title="Choose which ${esc(v.cols)} to show">${v.cols === 'fields' ? 'Fields' : 'Columns'} ▾</button>` : ''}${toggle ?`<label for="${ocId}" class="oc-label" title="Hide the ${esc(v.cols)} that kept their value in the updated ${esc(v.rows)} of this ${esc(v.table)}">Only changed ${esc(v.cols)}</label>` : ''}<a class="up" href="#">↑ top</a></h2>
+    <div class="explain">${explain(e, D, changedCols, v, dom).map((p) => `<p>${p}</p>`).join('')}</div>
+    ${noteBox(noteId('t:' + e.name), `Note on ${e.name}`, `Why did ${e.name} change? Is it expected?`, false)}`;
 
   html += schemaBlock(e.schema, e.status, v);
 
@@ -207,7 +353,7 @@ function val(x) {
 
 /* ------------------------------------------------------------ explanation */
 
-function explain(e, D, changedCols, v) {
+function explain(e, D, changedCols, v, dom = '') {
   const out = [];
   const keyText = e.key?.length ? `<code>${e.key.map(esc).join(', ')}</code>` : '';
   if (e.status === 'new') {
@@ -232,11 +378,11 @@ function explain(e, D, changedCols, v) {
   const imp = e.impact;
   if (imp) {
     for (const o of imp.orphans || []) {
-      out.push(`<span class="warn">⚠ ${plural(o.count, v.row, v.rows)} in <a href="#${anchor(o.table)}"><code>${esc(o.table)}</code></a> still ${o.count === 1 ? 'points' : 'point'} to deleted ${v.rows} here (through <code>${esc(o.via)}</code>) — possible orphans.</span>`);
+      out.push(`<span class="warn">⚠ ${plural(o.count, v.row, v.rows)} in <a href="#${anchor(o.table, dom)}"><code>${esc(o.table)}</code></a> still ${o.count === 1 ? 'points' : 'point'} to deleted ${v.rows} here (through <code>${esc(o.via)}</code>) — possible orphans.</span>`);
     }
     const linked = [...(imp.parents || []), ...(imp.children || [])].filter((x) => x.changed && x.table && x.table !== e.name);
     const uniq = [...new Map(linked.map((x) => [x.table, x])).values()];
-    if (uniq.length) out.push(`Related ${v.tables} that also changed: ${uniq.map((x) => `<a href="#${anchor(x.table)}"><code>${esc(x.table)}</code></a> (via <code>${esc(x.via)}</code>)`).join(', ')}.`);
+    if (uniq.length) out.push(`Related ${v.tables} that also changed: ${uniq.map((x) => `<a href="#${anchor(x.table, dom)}"><code>${esc(x.table)}</code></a> (via <code>${esc(x.via)}</code>)`).join(', ')}.`);
     if (imp.triggers?.length) out.push(`Triggers on this ${v.table} may have made some of these changes: ${imp.triggers.map((t) => `<code>${esc(t.name)}</code> (${esc(t.timing)} ${esc(t.event)})`).join(', ')}.`);
   }
   return out;
@@ -332,6 +478,7 @@ code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:.92em}
 a{color:var(--accent)}
 .top,main,footer{max-width:1400px;margin:0 auto;padding:0 20px}
 .top{padding-top:28px}
+.capture-title{margin:0 0 20px;font-size:30px;line-height:1.25;text-align:center}
 .eyebrow{text-transform:uppercase;letter-spacing:.08em;font-size:11px;color:var(--dim);font-weight:600}
 h1{margin:4px 0 6px;font-size:28px}
 .sub{margin:0 0 18px;color:var(--text)}
@@ -418,6 +565,27 @@ ins{color:var(--ins);text-decoration:none;font-weight:600}
 .ref{font-size:11px;color:var(--accent);font-family:system-ui,sans-serif}
 .ref .miss{color:var(--del)}
 footer{color:var(--dim);font-size:12px;padding-bottom:30px}
+.multi-summary{color:var(--dim);font-size:12.5px;margin:-8px 0 14px}
+.cap-list{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin:0 0 14px}
+.cap-list h2{font-size:13px;margin:0 0 8px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+.cap-list ol{list-style:none;margin:0;padding:0}
+.cap-list li+li{border-top:1px solid var(--line)}
+.cap-list a{display:flex;align-items:center;gap:10px;padding:8px 4px;color:var(--text);text-decoration:none}
+.cap-list a:hover{color:var(--accent)}
+.cap-n{display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--code);color:var(--accent);font-size:11px;font-weight:700;flex:none}
+.cap-main{min-width:0;display:flex;flex-direction:column;gap:1px}
+.cap-main b{font-size:13.5px}
+.cap-when{color:var(--dim);font-size:11.5px}
+.cap-counts{margin-left:auto;color:var(--dim);font-size:11.5px;white-space:nowrap}
+.cap-rule{border:0;border-top:2px solid var(--line);margin:38px 0 30px}
+.capture{scroll-margin-top:12px}
+.cap-kicker{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+.cap-step{display:grid;place-items:center;width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;font-size:12px;letter-spacing:0}
+.cap-title{margin:0 0 2px;font-size:24px}
+.cap-change{margin:0 0 8px;color:var(--accent);font-weight:600}
+.cap-head{margin-bottom:14px}
+.cap-body{padding-left:14px;border-left:3px solid var(--line)}
+@media (max-width:700px){.cap-counts{display:none}.cap-body{padding-left:0;border-left:0}}
 @page{size:A4 landscape;margin:10mm}
 @media print{
 :root,:root[data-theme="dark"]{${LIGHT}}
@@ -426,6 +594,13 @@ body{background:#fff;font-size:11px}
 .tbl.collapsed h2::after{content:"(details hidden)";font-size:11px;font-weight:400;color:var(--dim)}
 .notes.src .nt-body{display:block}
 .notes.filled{display:block;break-inside:avoid}
+.cap-rule{display:none!important}
+.captures > .capture{break-before:page;page-break-before:always}
+.captures > .capture:first-child{break-before:auto;page-break-before:auto}
+.cap-list,.cap-head{break-inside:avoid}
+.cap-head{break-after:avoid}
+.cap-body{padding-left:0;border-left:0}
+.cap-title{font-size:20px}
 .nt-body:empty::before{content:none}
 .top,main,footer{max-width:none;padding:0}
 .wrap{max-height:none;overflow:visible;border:0}
@@ -762,7 +937,7 @@ const SCRIPT = `
   var colStyle = $('#wcColStyle');
   if (!colStyle) { colStyle = document.createElement('style'); colStyle.id = 'wcColStyle'; document.head.appendChild(colStyle); }
   var hidden = {}; // table name -> { column name: true }
-  function tableOf(s) { return s.getAttribute('data-table'); }
+  function tableOf(s) { return s.getAttribute('data-key') || s.getAttribute('data-table'); }
   function colsOf(s) {
     return $$('.wrap table thead th[data-c]', s).filter(function (th, i, all) {
       return all.findIndex(function (x) { return x.getAttribute('data-c') === th.getAttribute('data-c'); }) === i;
@@ -828,10 +1003,12 @@ const SCRIPT = `
   $('#wcExpandAll').onclick = function () { sections.forEach(function (s) { setCollapsed(s, false); }); autosave(); };
   $('#wcResetView').onclick = function () { closeColumns(); applyView({}); autosave(); };
   // Jumping to a table from the list at the top opens it.
-  $$('a[href^="#t-"]').forEach(function (a) {
+  $$('a[href^="#"]').forEach(function (a) {
     a.addEventListener('click', function () {
-      var s = document.getElementById(a.getAttribute('href').slice(1));
-      if (s && s.classList.contains('collapsed')) { setCollapsed(s, false); autosave(); }
+      var id = a.getAttribute('href').slice(1);
+      if (!id) return;
+      var s = document.getElementById(id);
+      if (s && s.classList.contains('tbl') && s.classList.contains('collapsed')) { setCollapsed(s, false); autosave(); }
     });
   });
 

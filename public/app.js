@@ -1623,6 +1623,7 @@
   /* ================================================================ history */
   let SEL = [];
   const HIST_PAGE = 20;
+  const MAX_COMBINED = 100;
   async function viewHistory() {
     S.view = 'history';
     S.snaps = await api('snap.list', { conn: S.conn.id });
@@ -1634,6 +1635,7 @@
         <div><h1 style="margin:0;font-size:26px;letter-spacing:-.02em">Snapshot history</h1>
           <div class="muted">Pick any two snapshots to compare, or choose which one live-watch compares against.</div></div>
         <span class="spacer"></span>
+        <button class="btn ghost" id="combinedHtml" title="Put several captures into one HTML report">${ic('code')}Combined HTML</button>
         <button class="btn primary" id="newSnap">${ic('camera')}New snapshot</button>
       </div>
       <div class="hist">
@@ -1677,6 +1679,74 @@
       if (ls.get('watch:' + S.conn.id, true)) startWatch();
       viewHistory();
     };
+
+    function eligibleCaptures() {
+      const out = [];
+      let prev = null;
+      for (const s of [...list].reverse()) {
+        if (s.status !== 'complete') continue;
+        if (prev) out.push({ snap: s, prev });
+        prev = s;
+      }
+      return out;
+    }
+
+    function openCombinedReport() {
+      const caps = eligibleCaptures();
+      if (!caps.length) return toast('Need at least two complete snapshots to build a combined report.', 'warn');
+      const rows = caps.map(({ snap, prev }, i) => {
+        const dRows = (snap.rows || 0) - (prev.rows || 0);
+        const chip = dRows ? `<span class="chip ${dRows > 0 ? 'ins' : 'del'}">${dRows > 0 ? '+' : ''}${fmt(dRows)} ${v.rows}</span>` : '';
+        return `<label class="multi-item">
+          <input type="checkbox" data-cap="${snap.id}" checked>
+          <span class="multi-n">${i + 1}</span>
+          <span class="multi-main"><b>${esc(snap.label)}</b><span class="multi-sub">${clock(snap.created_at)} · vs ${esc(prev.label)}${chip ? ` · ${chip}` : ''}</span></span>
+          <span class="multi-meta">${fmt(snap.tables)} ${v.tables}</span>
+        </label>`;
+      }).join('');
+      const m = modal(`<div class="row multi-head"><div><h3>Combined HTML report</h3>
+          <p class="muted">Each capture is compared with the snapshot just before it. Uncheck any action you want to leave out.</p></div>
+          <span class="spacer"></span><button type="button" class="btn sm icon ghost" data-close>${ic('x')}</button></div>
+        <div class="multi-tools"><button type="button" class="btn sm ghost" data-all>Select all</button><button type="button" class="btn sm ghost" data-none>Clear</button>
+          <span class="spacer"></span><span class="multi-count" id="multiCount"></span></div>
+        <div class="multi-list">${rows}</div>
+        <label class="multi-title"><span>Report title</span><input class="input" id="multiTitle" maxlength="80" placeholder="All captures"></label>
+        <div class="row" style="margin-top:16px"><span class="muted" style="font-size:12px">${caps.length} eligible capture${caps.length === 1 ? '' : 's'}</span>
+          <span class="spacer"></span><a class="btn primary" id="multiGo" target="_blank" rel="noopener">${ic('code')}Preview HTML</a></div>`);
+      m.querySelector('.modal').classList.add('wide', 'multi-modal');
+      const boxes = [...m.querySelectorAll('[data-cap]')];
+      const go = m.querySelector('#multiGo');
+      const count = m.querySelector('#multiCount');
+      const titleInput = m.querySelector('#multiTitle');
+      function refresh() {
+        const ids = boxes.filter((b) => b.checked).map((b) => b.dataset.cap);
+        const over = ids.length > MAX_COMBINED;
+        count.textContent = `${ids.length} of ${boxes.length} selected${over ? ` · maximum ${MAX_COMBINED}` : ''}`;
+        if (ids.length && !over) {
+          const params = new URLSearchParams({ token: TOKEN, conn: S.conn.id, ids: ids.join(',') });
+          const title = titleInput.value.trim();
+          if (title) params.set('title', title);
+          go.href = `/report.html?${params}`;
+          go.classList.remove('disabled');
+          go.removeAttribute('aria-disabled');
+        } else {
+          go.removeAttribute('href');
+          go.classList.add('disabled');
+          go.setAttribute('aria-disabled', 'true');
+        }
+      }
+      boxes.forEach((b) => b.addEventListener('change', refresh));
+      titleInput.addEventListener('input', refresh);
+      m.querySelector('[data-all]').onclick = () => { boxes.forEach((b) => { b.checked = true; }); refresh(); };
+      m.querySelector('[data-none]').onclick = () => { boxes.forEach((b) => { b.checked = false; }); refresh(); };
+      go.addEventListener('click', (e) => { if (!boxes.some((b) => b.checked)) { e.preventDefault(); toast('Select at least one capture.', 'warn'); } });
+      m.querySelector('[data-close]').onclick = () => m.remove();
+      m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+      m.addEventListener('keydown', (e) => { if (e.key === 'Escape') m.remove(); });
+      refresh();
+    }
+
+    $('#combinedHtml').onclick = openCombinedReport;
     $('.hist').onclick = async (e) => {
       const b = e.target.closest('[data-base],[data-rename],[data-delete]');
       const cb = e.target.closest('[data-sel]');

@@ -10,7 +10,7 @@ import { Storage } from './src/storage.js';
 import { Snapshotter } from './src/snapshotter.js';
 import { Differ, PAGE, pageOut } from './src/differ.js';
 import { buildRelations } from './src/relations.js';
-import { reportFilename, reportHtml } from './src/htmlreport.js';
+import { reportFilename, reportHtml, reportHtmlMulti } from './src/htmlreport.js';
 import { scanCode } from './src/codescanner.js';
 import { DRIVERS, detectDriver, dropDriver, getDriver, openDriver } from './src/drivers/index.js';
 import { cut, safeId } from './src/util.js';
@@ -30,6 +30,22 @@ const peekCache = new Map();
 setInterval(() => { for (const [k, v] of peekCache) if (Date.now() - v.at > 600000) peekCache.delete(k); }, 60000).unref();
 const PUBLIC = path.join(ROOT, 'public');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
+const MAX_COMBINED = 100;
+
+/** Build the per-capture diffs for a report made of several selected snapshots. */
+function combinedItems(c, ids) {
+  const wanted = new Set(ids);
+  const complete = store.summaries(c.id).filter((s) => s.status === 'complete').reverse();
+  const items = [];
+  for (let i = 1; i < complete.length; i++) {
+    const to = complete[i];
+    if (!wanted.has(to.id)) continue;
+    const from = complete[i - 1];
+    const report = new Differ(store, c.id).diff(from.id, to.id);
+    items.push({ report, full: (table) => store.readJson(store.diffRowsPath(c.id, from.id, to.id, table)) });
+  }
+  return items;
+}
 
 /** Connection settings from the form; reuse stored secrets when editing and the field was left empty. */
 function connFromInput(b) {
@@ -385,6 +401,19 @@ const server = http.createServer(async (req, res) => {
     if (url.searchParams.get('token') !== TOKEN) return send(res, 403, 'Session expired — reload WhatChanged and open the report again.', 'text/plain; charset=utf-8');
     try {
       const c = store.connection(safeId(url.searchParams.get('conn') || ''));
+      const idsRaw = url.searchParams.get('ids');
+      if (idsRaw !== null) {
+        const raw = String(idsRaw).split(',').map((x) => x.trim()).filter(Boolean);
+        if (!raw.length) throw new Error('No captures selected.');
+        if (raw.length > MAX_COMBINED) throw new Error(`Too many captures selected (maximum ${MAX_COMBINED}).`);
+        const ids = [...new Set(raw.map(safeId))];
+        const items = combinedItems(c, ids);
+        if (!items.length) throw new Error('None of the selected captures has an earlier complete snapshot to compare.');
+        const html = reportHtmlMulti(items, { title: url.searchParams.get('title') || '' });
+        return send(res, 200, html, 'text/html; charset=utf-8', {
+          'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'",
+        });
+      }
       const from = safeId(url.searchParams.get('from') || '');
       const to = safeId(url.searchParams.get('to') || '');
       const report = new Differ(store, c.id).diff(from, to);

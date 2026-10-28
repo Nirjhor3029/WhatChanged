@@ -210,6 +210,7 @@ export function reportHtmlMulti(items, opts = {}) {
   <span class="status" id="wcStatus"></span>
   <button type="button" id="wcTheme" title="Switch theme">◐ Auto</button>
   <button type="button" id="wcSave" title="Save this file with your notes (Ctrl+S)">💾 Save file</button>
+  <button type="button" id="wcDownload" title="Download a copy of this HTML file">⬇ Download</button>
   <button type="button" id="wcPrint" title="Print, or choose “Save as PDF”">🖨 Print / PDF</button>
 </div>
 <header class="top">
@@ -888,6 +889,30 @@ const SCRIPT = `
     clone.querySelector('#wc-view').textContent = JSON.stringify(viewState()).replace(/</g, '\\\\u003c');
     return { at: at, html: '<!doctype html>\\n' + clone.outerHTML };
   }
+  var downloadButton = $('#wcDownload');
+  function markSaved(page, message) {
+    $('meta[name="wc-saved"]').setAttribute('content', page.at);
+    store.set(KEY, { at: page.at, notes: collect(), view: viewState() });
+    dirty = false;
+    status(message);
+  }
+  function downloadHtml(html, name) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    a.download = name;
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+  function downloadFile() {
+    var page = pageHtml();
+    var name = meta('wc-file') || 'whatchanged-report.html';
+    try {
+      downloadHtml(page.html, name);
+      markSaved(page, 'Downloaded ' + name);
+    } catch (e) {
+      status('Download failed: ' + (e && e.message ? e.message : e));
+    }
+  }
   async function saveFile() {
     var page = pageHtml();
     var name = meta('wc-file') || 'whatchanged-report.html';
@@ -897,25 +922,23 @@ const SCRIPT = `
         var w = await handle.createWritable();
         await w.write(page.html);
         await w.close();
+        markSaved(page, 'Saved ' + handle.name + (downloadButton ? ' \\u2014 use Download for a copy' : ''));
       } else {
-        var a = document.createElement('a');
-        a.href = URL.createObjectURL(new Blob([page.html], { type: 'text/html' }));
-        a.download = name;
-        a.click();
-        setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+        downloadHtml(page.html, name);
+        markSaved(page, 'Downloaded ' + name);
       }
-      $('meta[name="wc-saved"]').setAttribute('content', page.at);
-      store.set(KEY, { at: page.at, notes: collect(), view: viewState() });
-      dirty = false;
-      status('Saved ' + (handle ? handle.name : name));
     } catch (e) {
       if (e && e.name === 'AbortError') return;
       status('Save failed: ' + (e && e.message ? e.message : e));
     }
   }
   $('#wcSave').onclick = saveFile;
+  if (downloadButton) downloadButton.onclick = downloadFile;
   document.addEventListener('keydown', function (e) {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveFile(); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      if (e.shiftKey && downloadButton) downloadFile(); else saveFile();
+    }
   });
   window.addEventListener('beforeunload', function (e) { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
 
